@@ -28,4 +28,9 @@ public class BuffData : ScriptableObject
 
     [Tooltip("进度条的颜色")]
     public Color uiColor = Color.green;
+
+    // 🔥🔥【新增】清除规则配置 🔥🔥
+    [Header("=== 清除规则 ===")]
+    [Tooltip("勾选 = 死亡或坐篝火时自动清除。\n不勾 = 永久保留（直到时间结束或手动清除）。")]
+    public bool clearOnRest = true;
 }

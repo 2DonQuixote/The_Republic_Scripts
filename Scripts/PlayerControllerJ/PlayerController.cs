@@ -8,7 +8,7 @@ public class PlayerController : MonoBehaviour
     // 🔥 这里拖入你的 WeaponItem (例如 Sword_Beginner)
     public WeaponItem currentWeapon;
 
-    // 🔥🔥 [新增] 右手骨骼挂载点 (记得在Inspector里把 Hand_R 拖进去！)
+    // 🔥 右手骨骼挂载点 (记得在Inspector里把 Hand_R 拖进去！)
     [Header("=== 模型挂载点 ===")]
     public Transform rightHandTransform;
 
@@ -20,7 +20,7 @@ public class PlayerController : MonoBehaviour
     public bool useRootMotion = true;
 
     [Header("=== 通用手感配置 ===")]
-    [Tooltip("输入缓存时间(秒)")]
+    [Tooltip("输入缓存时间(秒): 防止按键太快吞指令")]
     public float inputBufferTime = 0.8f;
 
     [Header("=== 翻滚配置 ===")]
@@ -37,8 +37,10 @@ public class PlayerController : MonoBehaviour
     private Rigidbody rb;
     private Animator animator;
 
-    // 🔥🔥 [新增] 记录当前生成的模型，方便切换时销毁旧的
+    // 武器模型引用
     private GameObject currentWeaponModel;
+    // 🔥 [新增] 当前武器的伤害处理器
+    private WeaponDamageHandler currentWeaponHandler;
 
     // 状态标记
     private bool isCrouching;
@@ -48,7 +50,7 @@ public class PlayerController : MonoBehaviour
     private bool canMove = true;
 
     // 战斗状态
-    private int comboCount = 0; // 当前连击段数 (0=第一刀, 1=第二刀...)
+    private int comboCount = 0; // 当前连击段数
     private bool currentAttackIsHeavy = false;
 
     // 计时器
@@ -64,18 +66,20 @@ public class PlayerController : MonoBehaviour
         rb = GetComponent<Rigidbody>();
         animator = GetComponent<Animator>();
         defaultDrag = rb.drag;
-        controls = new GameControls();
 
+        // 初始化 Input System
+        controls = new GameControls();
         SetupInput();
     }
 
     private void Start()
     {
-        // 🔥 初始化武器 (关键！)
+        // 游戏开始自动装备武器
         EquipWeapon(currentWeapon);
     }
 
-    // 🔥🔥 [修改] 装备武器：现在不仅换动画，还会换模型
+    // ================= 核心：武器装备逻辑 =================
+
     public void EquipWeapon(WeaponItem newWeapon)
     {
         currentWeapon = newWeapon;
@@ -96,66 +100,77 @@ public class PlayerController : MonoBehaviour
         {
             if (rightHandTransform != null)
             {
+                // 生成新模型
                 currentWeaponModel = Instantiate(currentWeapon.modelPrefab, rightHandTransform);
                 currentWeaponModel.transform.localPosition = Vector3.zero;
                 currentWeaponModel.transform.localRotation = Quaternion.identity;
-                // 注意：这里用了 Scale 1，请确保使用了“父子隔离法”做的预制体
                 currentWeaponModel.transform.localScale = Vector3.one;
+
+                // 🔥 [核心] 获取武器上的伤害脚本
+                currentWeaponHandler = currentWeaponModel.GetComponent<WeaponDamageHandler>();
+
+                if (currentWeaponHandler == null)
+                {
+                    Debug.LogWarning($"注意：武器 {newWeapon.name} 的模型上没挂 WeaponDamageHandler 脚本，攻击将没有伤害！");
+                }
             }
             else
             {
-                Debug.LogError("请在 Inspector 面板的 PlayerController 组件里，把 'Right Hand Transform' (Hand_R) 拖进去！");
+                Debug.LogError("请在 PlayerController 组件里把 'Right Hand Transform' 拖进去！");
             }
         }
 
-        // 🔥 切换武器时，强制重置连招
+        // 切换武器时重置状态
         ResetCombo();
         CancelInvoke(nameof(ResetCombo));
     }
+
+    // ================= 核心：输入与更新 =================
 
     private void SetupInput()
     {
         controls.Gameplay.Move.performed += ctx => moveInput = ctx.ReadValue<Vector2>();
         controls.Gameplay.Move.canceled += ctx => moveInput = Vector2.zero;
+
         controls.Gameplay.Run.performed += ctx => isRunning = true;
         controls.Gameplay.Run.canceled += ctx => isRunning = false;
+
         controls.Gameplay.Crouch.performed += ctx => ToggleCrouch(!isCrouching);
 
         controls.Gameplay.Roll.performed += ctx => HandleRollInput();
+
+        // 攻击输入缓存
         controls.Gameplay.Attack.performed += ctx => BufferAttackInput(false);
         controls.Gameplay.HeavyAttack.performed += ctx => BufferAttackInput(true);
     }
 
-    private void OnEnable()
-    {
-        controls.Gameplay.Enable();
-    }
-
-    private void OnDisable()
-    {
-        controls.Gameplay.Disable();
-    }
+    private void OnEnable() => controls.Gameplay.Enable();
+    private void OnDisable() => controls.Gameplay.Disable();
 
     private void Update()
     {
         if (!canMove) return;
+        // 只有这里每帧检查输入缓存，决定是否出招
         CheckBufferedInput();
     }
 
     private void FixedUpdate()
     {
         if (!canMove) return;
+        // 攻击或翻滚时锁定移动（除非使用了 RootMotion）
         if (isRolling || isAttacking) return;
 
         HandleMovement();
         HandleRotation();
     }
 
-    // ================= 核心战斗逻辑 (修改部分) =================
+    // ================= 核心：战斗逻辑 =================
 
     private void BufferAttackInput(bool isHeavy)
     {
         if (!canMove) return;
+
+        // 如果正在翻滚，要看是否到了可取消的窗口期
         if (!isRolling || (Time.time - rollStartTime >= rollDuration * rollAttackWindow))
         {
             lastInputTime = Time.time;
@@ -165,46 +180,49 @@ public class PlayerController : MonoBehaviour
 
     private void CheckBufferedInput()
     {
+        // 检查输入是否过期
         bool hasBufferedInput = (Time.time - lastInputTime) < inputBufferTime;
         if (!hasBufferedInput) return;
 
         if (isRolling)
         {
+            // 翻滚攻击
             if ((Time.time - rollStartTime) >= rollDuration * rollAttackWindow)
             {
                 ExecuteAttack(bufferedInputIsHeavy);
-                lastInputTime = -100f;
+                lastInputTime = -100f; // 消耗掉输入
             }
         }
         else if (CanAttackNow())
         {
+            // 正常连招
             ExecuteAttack(bufferedInputIsHeavy);
-            lastInputTime = -100f;
+            lastInputTime = -100f; // 消耗掉输入
         }
     }
 
     private bool CanAttackNow()
     {
         if (isRolling) return false;
-        if (!isAttacking) return true;
+        if (!isAttacking) return true; // 没攻击当然可以攻击
 
         if (currentWeapon == null) return false;
 
+        // 如果正在攻击，检查是否到了连招窗口期 (Combo Window)
         AttackAction currentAction = GetCurrentActionData();
         if (currentAction == null) return true;
 
         float timePlayed = Time.time - lastAttackStartTime;
+        // 比如动作全长 1秒，WindowStart=0.6，那么 0.6秒后才能出下一刀
         return timePlayed >= (currentAction.totalDuration * currentAction.comboWindowStart);
     }
 
-    // 🔥 [核心修改] 执行攻击逻辑
     private void ExecuteAttack(bool isHeavy)
     {
         if (currentWeapon == null) return;
 
-        // 1. 只要攻击了，就取消“重置倒计时”，因为玩家接上了
+        // 1. 状态准备：只要出刀，就取消“连招重置倒计时”
         CancelInvoke(nameof(ResetCombo));
-
         PrepareAttackState();
         currentAttackIsHeavy = isHeavy;
 
@@ -213,21 +231,18 @@ public class PlayerController : MonoBehaviour
         // 2. 获取动作数据
         if (isHeavy)
         {
-            comboCount = 0; // 重击通常不参与轻击连招，直接算0
+            comboCount = 0; // 重击通常是单独动作
             action = currentWeapon.GetHeavyAttack(0);
         }
         else
         {
-            // 如果连招段数超过了配置数量，归零
+            // 轻击：防止数组越界
             if (comboCount >= currentWeapon.lightAttacks.Count) comboCount = 0;
-
-            // 获取当前这一段的动作
             action = currentWeapon.GetLightAttack(comboCount);
         }
 
         if (action == null)
         {
-            Debug.LogWarning("未找到攻击动作配置！");
             OnAttackEnd();
             return;
         }
@@ -235,14 +250,19 @@ public class PlayerController : MonoBehaviour
         // 3. 播放动画
         animator.CrossFade(action.animName, action.transitionDuration);
 
-        // 4. 设置硬直结束时间
+        // 4. 🔥 [伤害判定开启]
+        if (currentWeaponHandler != null)
+        {
+            // 直接读取动作里配置的数值作为伤害
+            float finalDamage = action.damageMultiplier;
+            currentWeaponHandler.EnableDamage(finalDamage);
+        }
+
+        // 5. 设置硬直结束时间
         Invoke(nameof(OnAttackEnd), action.totalDuration);
 
-        // 5. 🔥 [关键] 为“下一刀”做准备：计数+1
-        if (!isHeavy)
-        {
-            comboCount++;
-        }
+        // 6. 连招计数加一 (为下一刀做准备)
+        if (!isHeavy) comboCount++;
     }
 
     private AttackAction GetCurrentActionData()
@@ -250,32 +270,56 @@ public class PlayerController : MonoBehaviour
         if (currentWeapon == null) return null;
         if (currentAttackIsHeavy) return currentWeapon.GetHeavyAttack(0);
 
-        // 注意：因为我们在 ExecuteAttack 结尾才 comboCount++，
-        // 所以查询当前正在播放的动作时，应该是 comboCount - 1 (需防越界)
+        // 此时 comboCount 已经加过1了，所以要查当前动作得减1
         int index = Mathf.Clamp(comboCount - 1, 0, currentWeapon.lightAttacks.Count - 1);
-        // 如果是刚刚重置完还没打第一下（极少情况），就返0
-        if (comboCount == 0) index = 0;
+        if (comboCount == 0) index = 0; // 还没打第一下
 
         return currentWeapon.GetLightAttack(index);
     }
 
     private void PrepareAttackState()
     {
+        // 如果是从翻滚打断过来的
         if (isRolling)
         {
             isRolling = false;
             rb.drag = defaultDrag;
             CancelInvoke(nameof(OnRollEnd));
+            if (currentWeaponHandler != null) currentWeaponHandler.DisableDamage();
         }
 
-        FaceMouseInstant();
+        FaceMouseInstant(); // 攻击瞬间朝向鼠标
 
         isAttacking = true;
-        rb.velocity = Vector3.zero;
+        rb.velocity = Vector3.zero; // 攻击时停止滑步
         lastAttackStartTime = Time.time;
 
-        CancelInvoke(nameof(OnAttackEnd));
+        CancelInvoke(nameof(OnAttackEnd)); // 取消之前的结束回调
     }
+
+    // ================= 状态回调 =================
+
+    // 动作做完了 (或者 Invoke 时间到了)
+    public void OnAttackEnd()
+    {
+        isAttacking = false;
+
+        // 🔥 [伤害判定关闭] 把刀收起来
+        if (currentWeaponHandler != null)
+        {
+            currentWeaponHandler.DisableDamage();
+        }
+
+        // 开启“连招中断倒计时”，比如2秒内不打下一刀，连招归零
+        Invoke(nameof(ResetCombo), currentWeapon.comboResetTime);
+    }
+
+    private void ResetCombo()
+    {
+        comboCount = 0;
+    }
+
+    // ================= 翻滚逻辑 =================
 
     private void HandleRollInput()
     {
@@ -283,12 +327,14 @@ public class PlayerController : MonoBehaviour
         if (Time.time < lastRollTime + rollCooldown) return;
         if (isRolling) return;
 
+        // 攻击中也可以翻滚（取消后摇）
         if (isAttacking)
         {
             AttackAction currentAction = GetCurrentActionData();
             if (currentAction != null)
             {
                 float timePlayed = Time.time - lastAttackStartTime;
+                // 如果还没到“允许翻滚点”，则不能滚 (比如刚抬手不能滚)
                 if (timePlayed < currentAction.totalDuration * currentAction.rollCancelStartTime)
                 {
                     return;
@@ -303,9 +349,10 @@ public class PlayerController : MonoBehaviour
     {
         isAttacking = false;
 
-        // 翻滚时，立即重置连招（或者你可以选择不重置，看需求）
-        ResetCombo();
+        // 翻滚时强制关闭伤害判定（防止带着伤害滚人堆里）
+        if (currentWeaponHandler != null) currentWeaponHandler.DisableDamage();
 
+        ResetCombo();
         CancelInvoke(nameof(OnAttackEnd));
 
         isRolling = true;
@@ -313,8 +360,9 @@ public class PlayerController : MonoBehaviour
         rollStartTime = Time.time;
 
         animator.CrossFade("Roll", 0.1f);
-        rb.drag = rollDrag;
+        rb.drag = rollDrag; // 增加阻力，让翻滚停得更自然
 
+        // 确定翻滚方向
         Vector3 rollDir = transform.forward;
         if (moveInput.magnitude > 0.1f)
             rollDir = new Vector3(moveInput.x, 0, moveInput.y).normalized;
@@ -325,32 +373,13 @@ public class PlayerController : MonoBehaviour
         Invoke(nameof(OnRollEnd), rollDuration);
     }
 
-    // ================= 状态回调 =================
-
-    // 🔥 [核心修改] 攻击动作结束
-    public void OnAttackEnd()
-    {
-        isAttacking = false;
-
-        // 动作做完了，开启“倒计时”
-        // 如果 2 秒（配置的时间）内没有再次攻击，ResetCombo 就会被调用，连招归零
-        Invoke(nameof(ResetCombo), currentWeapon.comboResetTime);
-    }
-
-    // 🔥 [新增] 专门用来重置连招的方法
-    private void ResetCombo()
-    {
-        comboCount = 0;
-        // Debug.Log("连招已超时重置");
-    }
-
     public void OnRollEnd()
     {
         isRolling = false;
         rb.drag = defaultDrag;
     }
 
-    // ================= 基础移动逻辑 =================
+    // ================= 基础移动 =================
 
     private void HandleMovement()
     {
@@ -397,6 +426,7 @@ public class PlayerController : MonoBehaviour
         animator.SetBool("IsCrouch", isCrouching);
     }
 
+    // 启用 RootMotion 时处理位移
     private void OnAnimatorMove()
     {
         if ((isAttacking || isRolling) && useRootMotion && canMove)

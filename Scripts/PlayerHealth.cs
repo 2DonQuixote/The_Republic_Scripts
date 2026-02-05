@@ -1,52 +1,52 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 using System.Collections;
 
-// ±£³Ö¼Ì³Ğ¹ØÏµ²»±ä
+// ä¿æŒç»§æ‰¿å…³ç³»ä¸å˜
 public class PlayerHealth : MonoBehaviour, IDamageable
 {
-    [Header("ÊôĞÔÉèÖÃ")]
+    [Header("å±æ€§è®¾ç½®")]
     [SerializeField] private float maxHealth = 100f;
     private float currentHealth;
-    private bool isDead = false; // ĞÂÔö£º·ÀÖ¹Ê¬ÌåÖØ¸´¿ÛÑª
+    private bool isDead = false; // æ–°å¢ï¼šé˜²æ­¢å°¸ä½“é‡å¤æ‰£è¡€
 
-    [Header("ÒÀÀµÒıÓÃ")]
+    [Header("ä¾èµ–å¼•ç”¨")]
     [SerializeField] private GhostBarAnimator healthBarAnimator;
 
-    // ĞÂÔö£ºĞèÒª¿ØÖÆÍæ¼ÒÄÜ²»ÄÜ¶¯
-    // ÇëÔÚ Inspector Àï°Ñ¹Ò×Å PlayerController µÄÎïÌå£¨Í¨³£¾ÍÊÇ×Ô¼º£©ÍÏ½øÈ¥
+    // æ–°å¢ï¼šéœ€è¦æ§åˆ¶ç©å®¶èƒ½ä¸èƒ½åŠ¨
+    // è¯·åœ¨ Inspector é‡ŒæŠŠæŒ‚ç€ PlayerController çš„ç‰©ä½“ï¼ˆé€šå¸¸å°±æ˜¯è‡ªå·±ï¼‰æ‹–è¿›å»
     [SerializeField] private MonoBehaviour playerController;
     [SerializeField] private Animator animator;
 
     private void Start()
     {
-        // ³õÊ¼»¯Âß¼­²»±ä
+        // åˆå§‹åŒ–é€»è¾‘ä¸å˜
         currentHealth = maxHealth;
         if (healthBarAnimator != null)
             healthBarAnimator.Initialize(currentHealth, maxHealth);
 
-        // ³¢ÊÔ×Ô¶¯»ñÈ¡×é¼ş£¬·ÀÖ¹Íü¼ÇÍÏ×§
+        // å°è¯•è‡ªåŠ¨è·å–ç»„ä»¶ï¼Œé˜²æ­¢å¿˜è®°æ‹–æ‹½
         if (animator == null) animator = GetComponent<Animator>();
-        // ×¢Òâ£ºÈç¹ûÄãÓÃµÄ½Å±¾½Ğ "PlayerController"£¬Çë°ÑÏÂÃæÕâĞĞÈ¡Ïû×¢ÊÍ
+        // æ³¨æ„ï¼šå¦‚æœä½ ç”¨çš„è„šæœ¬å« "PlayerController"ï¼Œè¯·æŠŠä¸‹é¢è¿™è¡Œå–æ¶ˆæ³¨é‡Š
         // if (playerController == null) playerController = GetComponent<PlayerController>();
     }
 
     public void TakeDamage(float amount)
     {
-        // Èç¹ûÒÑ¾­ËÀÁË£¬¾Í²»ÒªÔÙ¿ÛÑªÁË£¬·ÀÖ¹´¥·¢Á½´ÎËÀÍöÂß¼­
+        // å¦‚æœå·²ç»æ­»äº†ï¼Œå°±ä¸è¦å†æ‰£è¡€äº†ï¼Œé˜²æ­¢è§¦å‘ä¸¤æ¬¡æ­»äº¡é€»è¾‘
         if (isDead) return;
 
         currentHealth -= amount;
         if (currentHealth < 0) currentHealth = 0;
 
-        // UI ¸üĞÂÂß¼­±£³Ö²»±ä
+        // UI æ›´æ–°é€»è¾‘ä¿æŒä¸å˜
         if (healthBarAnimator != null)
         {
             healthBarAnimator.SetValue(currentHealth, maxHealth);
         }
 
-        Debug.Log($"ÊÜµ½ {amount} µãÉËº¦£¬Ê£ÓàÑªÁ¿: {currentHealth}");
+        Debug.Log($"å—åˆ° {amount} ç‚¹ä¼¤å®³ï¼Œå‰©ä½™è¡€é‡: {currentHealth}");
 
-        // ´¥·¢ËÀÍö
+        // è§¦å‘æ­»äº¡
         if (currentHealth <= 0)
         {
             Die();
@@ -58,60 +58,67 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (isDead) return;
         isDead = true;
 
-        Debug.Log(">>> ½ÇÉ«ËÀÍö£¬½øÈë¸´»îÁ÷³Ì <<<");
+        Debug.Log(">>> è§’è‰²æ­»äº¡ï¼Œè¿›å…¥å¤æ´»æµç¨‹ <<<");
 
-        // 1. ½ûÖ¹ÒÆ¶¯
+        // 1. ç¦æ­¢ç§»åŠ¨
         if (playerController != null) playerController.enabled = false;
 
-        // 2. ²¥·ÅËÀÍö¶¯»­ (È·±£ÄãµÄ Animator ÓĞ "Die" Õâ¸ö Trigger)
+        // 2. æ’­æ”¾æ­»äº¡åŠ¨ç”» (ç¡®ä¿ä½ çš„ Animator æœ‰ "Die" è¿™ä¸ª Trigger)
         if (animator != null) animator.SetTrigger("Die");
 
-        // 3. Æô¶¯¸´»îĞ­³Ì
+        // 3. å¯åŠ¨å¤æ´»åç¨‹
         StartCoroutine(RespawnRoutine());
     }
 
-    // ĞÂÔö£º¸´»îĞ­³Ì
+    // æ–°å¢ï¼šå¤æ´»åç¨‹
     IEnumerator RespawnRoutine()
     {
-        // µÈ´ı 3 Ãë£¨¸øËÀÍö¶¯»­ºÍºÚÆÁÁôÊ±¼ä£©
+        // ç­‰å¾… 3 ç§’ï¼ˆç»™æ­»äº¡åŠ¨ç”»å’Œé»‘å±ç•™æ—¶é—´ï¼‰
         yield return new WaitForSeconds(3.0f);
 
-        // --- ¿ªÊ¼¸´»î ---
+        // --- å¼€å§‹å¤æ´» ---
 
-        // 1. µ÷ÓÃ»ØÂú×´Ì¬·½·¨£¨ÇåÀí×´Ì¬¡¢»ØÑª£©
+        // 1. è°ƒç”¨å›æ»¡çŠ¶æ€æ–¹æ³•ï¼ˆæ¸…ç†çŠ¶æ€ã€å›è¡€ï¼‰
         HealToFull();
 
-        // 2. ´«ËÍ»Ø´æµµµã (´Ó GameFlowManager »ñÈ¡×ø±ê)
-        // ÕâÒ»²½ÊÇºËĞÄ£ºÈç¹ûÃ»ÓĞ GameFlowManager£¬¾ÍÁôÔÚÔ­µØ
+        // 2. ä¼ é€å›å­˜æ¡£ç‚¹ (ä» GameFlowManager è·å–åæ ‡)
+        // è¿™ä¸€æ­¥æ˜¯æ ¸å¿ƒï¼šå¦‚æœæ²¡æœ‰ GameFlowManagerï¼Œå°±ç•™åœ¨åŸåœ°
         if (GameFlowManager.Instance != null)
         {
             transform.position = GameFlowManager.Instance.currentRespawnPoint;
         }
 
-        // 3. »Ö¸´¶¯»­×´Ì¬ (±ÈÈçÇĞ»Ø Idle)
-        if (animator != null) animator.Play("Locomotion"); // »òÕß "Idle"
+        // 3. æ¢å¤åŠ¨ç”»çŠ¶æ€ (æ¯”å¦‚åˆ‡å› Idle)
+        if (animator != null) animator.Play("Locomotion"); // æˆ–è€… "Idle"
 
-        // 4. »Ö¸´ÒÆ¶¯¿ØÖÆ
+        // 4. æ¢å¤ç§»åŠ¨æ§åˆ¶
         if (playerController != null) playerController.enabled = true;
 
         isDead = false;
-        Debug.Log(">>> Íæ¼ÒÒÑÔÚ´æµµµã¸´»î <<<");
+        Debug.Log(">>> ç©å®¶å·²åœ¨å­˜æ¡£ç‚¹å¤æ´» <<<");
     }
 
-    // ÊµÏÖ½Ó¿Ú/×ø»ğÊ±µ÷ÓÃµÄ·½·¨
-    // ½¨Òé¸ÄÎª public£¬ÕâÑù Bonfire ½Å±¾¿ÉÒÔÖ±½Óµ÷ÓÃËü
+    // å®ç°æ¥å£/åç«æ—¶è°ƒç”¨çš„æ–¹æ³•
+    // å»ºè®®æ”¹ä¸º publicï¼Œè¿™æ · Bonfire è„šæœ¬å¯ä»¥ç›´æ¥è°ƒç”¨å®ƒ
     public void HealToFull()
     {
-        // 1. ÊıÖµ»ØÂú
+        // 1. æ•°å€¼å›æ»¡ (åŸä»£ç )
         currentHealth = maxHealth;
 
-        // 2. UI Ç¿ÖÆË¢ĞÂ£¨²»Ê¹ÓÃ¶¯»­£¬Ö±½ÓÂú£©
-        // »òÕßÊ¹ÓÃ SetValue ÈÃËüÂıÂıÕÇ»ØÈ¥Ò²¿ÉÒÔ£¬¿´ÄãÏ²ºÃ
+        // 2. UI å¼ºåˆ¶åˆ·æ–° (åŸä»£ç )
         if (healthBarAnimator != null)
         {
             healthBarAnimator.SetValue(currentHealth, maxHealth);
         }
 
-        Debug.Log("×´Ì¬ÒÑÍêÈ«»Ö¸´");
+        // ğŸ”¥ğŸ”¥ã€æ–°å¢ã€‘è°ƒç”¨çŠ¶æ€ç®¡ç†å™¨çš„å‡€åŒ–åŠŸèƒ½ ğŸ”¥ğŸ”¥
+        // å°è¯•è·å–åŒç‰©ä½“ä¸Šçš„ StatusManager
+        var statusMgr = GetComponent<StatusManager>();
+        if (statusMgr != null)
+        {
+            statusMgr.ClearDebuffsOnRest();
+        }
+
+        Debug.Log("çŠ¶æ€å·²å®Œå…¨æ¢å¤ (å·²æ ¹æ®é…ç½®æ¸…é™¤è´Ÿé¢çŠ¶æ€)");
     }
 }
