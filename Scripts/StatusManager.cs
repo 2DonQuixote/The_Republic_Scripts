@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using System.Collections; // 🔥 必须引用这个，才能用协程
 using System.Collections.Generic;
 
 public class StatusManager : MonoBehaviour
@@ -20,12 +21,10 @@ public class StatusManager : MonoBehaviour
 
     public List<ActiveBuff> currentBuffs = new List<ActiveBuff>();
 
-    // 🔥 修改点 1: 不再只认 PlayerHealth，而是认接口
     private IDamageable targetHealth;
 
     private void Awake()
     {
-        // 🔥 修改点 2: 获取接口，这样挂在玩家身上能用，挂在怪物身上也能用
         targetHealth = GetComponent<IDamageable>();
     }
 
@@ -43,7 +42,6 @@ public class StatusManager : MonoBehaviour
                 if (buff.tickTimer >= buff.data.tickInterval)
                 {
                     buff.tickTimer = 0f;
-                    // 🔥 修改点 3: 调用接口扣血
                     if (targetHealth != null) targetHealth.TakeDamage(buff.data.damagePerTick);
                 }
             }
@@ -70,17 +68,17 @@ public class StatusManager : MonoBehaviour
             currentBuffs.Add(new ActiveBuff(newData));
         }
 
-        // 注意：如果你不想在怪物头顶显示 UI，这里可以加个判断
-        // 目前这样写，怪物中 Buff 也会试图调用 UI，可能看起来有点怪，但功能是好的
+        // 通知 UI (仅限玩家)
         if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
         {
             GameStatusUI.Instance.ShowStatus(newData.uiMessage, newData.duration, newData.uiColor, newData.isStackable);
         }
     }
 
-    // 之前给你加的“清除负面状态”功能 (保留在这里)
+    // 🔥🔥🔥【核心修复】清除逻辑 🔥🔥🔥
     public void ClearDebuffsOnRest()
     {
+        // 1. 先清除数据 (把该删的删了)
         for (int i = currentBuffs.Count - 1; i >= 0; i--)
         {
             if (currentBuffs[i].data.clearOnRest)
@@ -88,6 +86,39 @@ public class StatusManager : MonoBehaviour
                 currentBuffs.RemoveAt(i);
             }
         }
-        // UI 刷新部分省略，因为怪物通常不需要刷新 UI
+
+        // 2. 刷新 UI (仅限玩家)
+        // 如果我们只是 HideUI()，那些不需要清除的 Buff (比如诅咒) 也会消失，
+        // 所以我们需要“先全清，再把幸存者画回去”。
+        if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
+        {
+            GameStatusUI.Instance.HideUI(); // 视觉上全部移除
+
+            // 启动协程：等一帧再重画
+            // 为什么要等？因为 Unity 的 Destroy 不是立刻生效的，
+            // 如果不等一帧直接画，UI 系统可能会复用那些“正在死亡”的图标，导致显示错误。
+            StartCoroutine(RebuildUI());
+        }
+    }
+
+    // 重绘 UI 的协程
+    IEnumerator RebuildUI()
+    {
+        // 等待当前帧结束 (让旧的图标彻底销毁)
+        yield return null;
+
+        // 把剩下的 Buff (那些没被清除的) 重新显示出来
+        foreach (var buff in currentBuffs)
+        {
+            if (GameStatusUI.Instance != null)
+            {
+                GameStatusUI.Instance.ShowStatus(
+                    buff.data.uiMessage,
+                    buff.timer, // 注意：这里传剩余时间，不要传总时间
+                    buff.data.uiColor,
+                    buff.data.isStackable
+                );
+            }
+        }
     }
 }

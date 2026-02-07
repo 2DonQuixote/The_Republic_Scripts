@@ -1,47 +1,107 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 using UnityEngine.UI;
+using DG.Tweening;
 
 public class EnemyHealthBar : MonoBehaviour
 {
-    [Header("UI ×é¼şÒıÓÃ")]
-    public GameObject uiCanvas; // ÑªÌõµÄ¸¸ÎïÌå£¨ÓÃÀ´ÕûÌåÒş²Ø£©
-    public Image fillImage;     // ÕæÕıÏÔÊ¾ÑªÁ¿µÄÄÇ¸öÂÌÉ«/ºìÉ«Ìõ
+    [Header("UI ç»„ä»¶å¼•ç”¨")]
+    public GameObject uiCanvas;
+    public Image fillImage;
+
+    [Header("âœ¨ å—å‡»åé¦ˆé…ç½®")]
+    // ğŸ’¡ è¿™é‡Œæˆ‘ä»¬ç»™ä¸ªé»˜è®¤å€¼ï¼Œé˜²æ­¢ Inspector é‡Œæ˜¯é»‘çš„
+    public Color flashColor = new Color(1f, 1f, 1f, 1f); // çº¯ç™½
+    public float flashDuration = 0.1f;
 
     private Camera mainCam;
+    private float lastHealth = -1f; // åˆå§‹æ ‡è®°
+    private Color originalColor = Color.clear; // åˆå§‹ä¸ºç©ºï¼Œç”¨æ¥åˆ¤æ–­æ˜¯å¦å·²åˆå§‹åŒ–
+    private Tween colorTween;
 
-    void Start()
+    void Awake() // æ”¹ç”¨ Awakeï¼Œæ¯” Start æ›´æ—©è¿è¡Œï¼Œé˜²è·‘é£
     {
         mainCam = Camera.main;
 
-        // ÓÎÏ·¿ªÊ¼Ê±£¬Èç¹ûÊÇÂúÑª£¬Ö±½ÓÒş²Ø
-        // ÎÒÃÇ¼ÙÉè³õÊ¼×´Ì¬ÊÇÒş²ØµÄ£¬µÈÊÕµ½ UpdateHealth µ÷ÓÃÔÙ¾ö¶¨ÊÇ·ñÏÔÊ¾
+        // 1. å¼ºåˆ¶æŠ“å–åŸå§‹é¢œè‰²
+        if (fillImage != null)
+        {
+            originalColor = fillImage.color;
+            // ğŸš‘ ä¿é™©æªæ–½ï¼šå¦‚æœæŠ“åˆ°çš„æ˜¯å…¨é€æ˜/é»‘è‰²ï¼Œå¼ºè¡Œè®¾ä¸ºçº¢è‰²ï¼Œé˜²æ­¢å‡ºé”™
+            if (originalColor.a == 0 || (originalColor.r == 0 && originalColor.g == 0 && originalColor.b == 0))
+            {
+                originalColor = Color.red;
+                fillImage.color = originalColor;
+                Debug.LogWarning("æ£€æµ‹åˆ°è¡€æ¡åˆå§‹é¢œè‰²å¼‚å¸¸ï¼Œå·²è‡ªåŠ¨ä¿®æ­£ä¸ºçº¢è‰²ã€‚");
+            }
+        }
+
+        // 2. åˆå§‹éšè—
         if (uiCanvas != null) uiCanvas.SetActive(false);
     }
 
     void LateUpdate()
     {
-        // Billboard Ğ§¹û£ºÈÃÑªÌõÊ¼ÖÕÕı¶Ô×ÅÉãÏñ»ú
-        // Ö»ÓĞÏÔÊ¾µÄÊ±ºò²Å¼ÆËã£¬Ê¡µãĞÔÄÜ
+        // åªæœ‰æ˜¾ç¤ºçš„æ—¶å€™æ‰è®¡ç®—æœå‘ï¼Œçœæ€§èƒ½
         if (uiCanvas != null && uiCanvas.activeInHierarchy)
         {
-            // ÈÃ UI µÄÕıÃæ³¯ÏòÉãÏñ»úµÄ·½Ïò
-            transform.LookAt(transform.position + mainCam.transform.forward);
+            if (mainCam != null)
+            {
+                transform.LookAt(transform.position + mainCam.transform.forward);
+            }
         }
     }
 
-    // ¹© EnemyHealth µ÷ÓÃµÄºËĞÄ·½·¨
     public void UpdateHealth(float current, float max)
     {
         if (uiCanvas == null || fillImage == null) return;
 
-        // 1. ¼ÆËã±ÈÀı
+        // 1. åˆ·æ–°è¿›åº¦æ¡
         float pct = current / max;
         fillImage.fillAmount = pct;
 
-        // 2. Ö»ÓĞ¡°µ±Ç°ÑªÁ¿ < ×î´óÑªÁ¿¡±ÇÒ¡°Ã»ËÀÍ¸(>0)¡±Ê±²ÅÏÔÊ¾
-        // Èç¹ûÄãÏ£ÍûËÀµôÊ±ÑªÌõÒ²ÏûÊ§£¬¾Í¼Ó && current > 0
         bool shouldShow = current < max && current > 0;
-
         uiCanvas.SetActive(shouldShow);
+
+        // 2. åªæœ‰å½“ lastHealth å·²ç»è¢«åˆå§‹åŒ–è¿‡(ä¸æ˜¯-1)ï¼Œä¸”è¡€é‡å‡å°‘æ—¶ï¼Œæ‰é—ªçƒ
+        if (lastHealth != -1f && current < lastHealth)
+        {
+            PlayDamageEffect();
+        }
+
+        // æ›´æ–°è®°å½•
+        lastHealth = current;
+    }
+
+    private void PlayDamageEffect()
+    {
+        // ğŸš‘ åŒé‡ä¿é™©ï¼šå¦‚æœåŸå§‹é¢œè‰²æ²¡æŠ“åˆ°ï¼Œç°åœ¨å†æŠ“ä¸€æ¬¡
+        if (originalColor == Color.clear && fillImage != null) originalColor = fillImage.color;
+
+        // æ€æ‰æ—§åŠ¨ç”»
+        if (colorTween != null && colorTween.IsActive()) colorTween.Kill();
+
+        // 1. å…ˆç¬é—´å˜å›åŸå§‹é¢œè‰² (æ¯”å¦‚çº¢è‰²)
+        fillImage.color = originalColor;
+
+        // 2. é—ªçƒåŠ¨ç”» (å˜ç™½ -> å˜å›åŸè‰²)
+        // ğŸš‘ å¼ºåˆ¶ FlashColor çš„ Alpha ä¸º 1ï¼Œé˜²æ­¢å˜é€æ˜
+        Color safeFlashColor = new Color(flashColor.r, flashColor.g, flashColor.b, 1f);
+
+        colorTween = fillImage.DOColor(safeFlashColor, flashDuration)
+            .SetLoops(2, LoopType.Yoyo)
+            .SetEase(Ease.OutQuad)
+            .OnComplete(() => {
+                // åŠ¨ç”»ç»“æŸï¼Œç¡®ä¿æœ€åä¸€å®šæ˜¯åŸå§‹é¢œè‰²ï¼Œä¸æ˜¯é»‘è‰²ï¼Œä¹Ÿä¸æ˜¯ç™½è‰²
+                fillImage.color = originalColor;
+            });
+    }
+
+    // è¿™æ˜¯ä¸€ä¸ªä¿é™©æ–¹æ³•ï¼šå½“ç‰©ä½“è¢«ç¦ç”¨å†å¯ç”¨æ—¶ï¼Œç¡®ä¿é¢œè‰²æ˜¯å¯¹çš„
+    void OnEnable()
+    {
+        if (fillImage != null && originalColor != Color.clear)
+        {
+            fillImage.color = originalColor;
+        }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using UnityEngine;
 using UnityEngine.InputSystem;
+using System.Collections; // 引用协程需要的命名空间
 
 [RequireComponent(typeof(Rigidbody), typeof(Animator))]
 public class PlayerController : MonoBehaviour
@@ -107,7 +108,8 @@ public class PlayerController : MonoBehaviour
                 currentWeaponModel.transform.localScale = Vector3.one;
 
                 // 🔥 [核心] 获取武器上的伤害脚本
-                currentWeaponHandler = currentWeaponModel.GetComponent<WeaponDamageHandler>();
+                // ✅ 在根物体及其所有子物体里找
+                currentWeaponHandler = currentWeaponModel.GetComponentInChildren<WeaponDamageHandler>();
 
                 if (currentWeaponHandler == null)
                 {
@@ -250,19 +252,47 @@ public class PlayerController : MonoBehaviour
         // 3. 播放动画
         animator.CrossFade(action.animName, action.transitionDuration);
 
-        // 4. 🔥 [伤害判定开启]
-        if (currentWeaponHandler != null)
-        {
-            // 直接读取动作里配置的数值作为伤害
-            float finalDamage = action.damageMultiplier;
-            currentWeaponHandler.EnableDamage(finalDamage);
-        }
+        // 4. 🔥 [伤害判定] 启动协程
+        // 传入整个 action 数据，方便协程里读取 delay(前摇) 和 duration(持续时间)
+        StartCoroutine(EnableDamageWithDelay(action));
 
         // 5. 设置硬直结束时间
         Invoke(nameof(OnAttackEnd), action.totalDuration);
 
         // 6. 连招计数加一 (为下一刀做准备)
         if (!isHeavy) comboCount++;
+    }
+
+    // 🔥🔥🔥【升级版】基于物理碰撞的持续伤害判定协程 🔥🔥🔥
+    IEnumerator EnableDamageWithDelay(AttackAction action)
+    {
+        // 1. 【前摇阶段】等待前摇时间
+        if (action.damageDelay > 0)
+        {
+            yield return new WaitForSeconds(action.damageDelay);
+        }
+
+        // 2. 检查状态：如果被打断（isAttacking变成false），就不开伤害了
+        if (!isAttacking || currentWeaponHandler == null)
+        {
+            yield break;
+        }
+
+        // 3. 【开启伤害】开启物理碰撞盒
+        // 告诉 Handler 这一刀的伤害值是多少
+        currentWeaponHandler.EnableDamage(action.damageMultiplier);
+
+        // 4. 【判定期持续阶段】让伤害盒开启一段时间
+        // 如果 WeaponItem 还没配 duration，默认给 0.1秒
+        float activeDuration = action.damageDuration > 0 ? action.damageDuration : 0.1f;
+        yield return new WaitForSeconds(activeDuration);
+
+        // 5. 【后摇阶段】时间到，关闭伤害
+        // 这样就实现了“后摇无伤害”的功能
+        if (currentWeaponHandler != null)
+        {
+            currentWeaponHandler.DisableDamage();
+        }
     }
 
     private AttackAction GetCurrentActionData()
@@ -304,7 +334,8 @@ public class PlayerController : MonoBehaviour
     {
         isAttacking = false;
 
-        // 🔥 [伤害判定关闭] 把刀收起来
+        // 🔥 [双重保险] 动作彻底结束时，再次强制关闭伤害
+        // 防止协程还在跑的时候动作被强制打断（虽然协程里也有检查，但多一层更稳）
         if (currentWeaponHandler != null)
         {
             currentWeaponHandler.DisableDamage();
