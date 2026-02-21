@@ -40,8 +40,8 @@ public class PlayerController : MonoBehaviour
 
     // 武器模型引用
     private GameObject currentWeaponModel;
-    // 🔥 [新增] 当前武器的伤害处理器
-    private WeaponDamageHandler currentWeaponHandler;
+
+    // [已删除] private WeaponDamageHandler currentWeaponHandler; <-- 删掉了这个
 
     // 状态标记
     private bool isCrouching;
@@ -107,14 +107,7 @@ public class PlayerController : MonoBehaviour
                 currentWeaponModel.transform.localRotation = Quaternion.identity;
                 currentWeaponModel.transform.localScale = Vector3.one;
 
-                // 🔥 [核心] 获取武器上的伤害脚本
-                // ✅ 在根物体及其所有子物体里找
-                currentWeaponHandler = currentWeaponModel.GetComponentInChildren<WeaponDamageHandler>();
-
-                if (currentWeaponHandler == null)
-                {
-                    Debug.LogWarning($"注意：武器 {newWeapon.name} 的模型上没挂 WeaponDamageHandler 脚本，攻击将没有伤害！");
-                }
+                // [已删除] 获取 Handler 的逻辑删掉了，因为现在不需要给模型挂脚本了
             }
             else
             {
@@ -253,7 +246,7 @@ public class PlayerController : MonoBehaviour
         animator.CrossFade(action.animName, action.transitionDuration);
 
         // 4. 🔥 [伤害判定] 启动协程
-        // 传入整个 action 数据，方便协程里读取 delay(前摇) 和 duration(持续时间)
+        // 传入整个 action 数据，方便协程里读取 delay(前摇) 和 radius/angle(扇形数据)
         StartCoroutine(EnableDamageWithDelay(action));
 
         // 5. 设置硬直结束时间
@@ -263,7 +256,7 @@ public class PlayerController : MonoBehaviour
         if (!isHeavy) comboCount++;
     }
 
-    // 🔥🔥🔥【升级版】基于物理碰撞的持续伤害判定协程 🔥🔥🔥
+    // 🔥🔥🔥【重构版】基于数学计算的扇形判定协程 🔥🔥🔥
     IEnumerator EnableDamageWithDelay(AttackAction action)
     {
         // 1. 【前摇阶段】等待前摇时间
@@ -272,26 +265,59 @@ public class PlayerController : MonoBehaviour
             yield return new WaitForSeconds(action.damageDelay);
         }
 
-        // 2. 检查状态：如果被打断（isAttacking变成false），就不开伤害了
-        if (!isAttacking || currentWeaponHandler == null)
+        // 2. 检查状态：如果被打断（isAttacking变成false），就不判定伤害了
+        if (!isAttacking)
         {
             yield break;
         }
 
-        // 3. 【开启伤害】开启物理碰撞盒
-        // 告诉 Handler 这一刀的伤害值是多少
-        currentWeaponHandler.EnableDamage(action.damageMultiplier);
+        // 3. 🔥【执行判定】直接调用扇形检测 (一击判定)
+        PerformSectorAttack(action);
 
-        // 4. 【判定期持续阶段】让伤害盒开启一段时间
-        // 如果 WeaponItem 还没配 duration，默认给 0.1秒
-        float activeDuration = action.damageDuration > 0 ? action.damageDuration : 0.1f;
-        yield return new WaitForSeconds(activeDuration);
+        // 以前的 DisableDamage 之类的全都不需要了
+    }
 
-        // 5. 【后摇阶段】时间到，关闭伤害
-        // 这样就实现了“后摇无伤害”的功能
-        if (currentWeaponHandler != null)
+    // 🔥🔥🔥【新增】扇形检测核心逻辑 🔥🔥🔥
+    private void PerformSectorAttack(AttackAction action)
+    {
+        // 1. 以玩家为中心，画一个球，把所有碰到的敌人找出来
+        // 这里的 LayerMask 默认检测所有层，你可以改成 LayerMask.GetMask("Enemy") 来优化性能
+        Collider[] hits = Physics.OverlapSphere(transform.position, action.attackRadius);
+
+        foreach (var hit in hits)
         {
-            currentWeaponHandler.DisableDamage();
+            // 排除自己
+            if (hit.gameObject == gameObject) continue;
+
+            // 排除非 IDamageable 物体
+            IDamageable target = hit.GetComponent<IDamageable>();
+            if (target == null) continue;
+
+            // 2. 算角度：敌人在我前方多少度？
+            Vector3 dirToTarget = (hit.transform.position - transform.position).normalized;
+
+            // 既然是扇形，我们只关心水平面上的角度，忽略高度差
+            dirToTarget.y = 0;
+            Vector3 myForward = transform.forward;
+            myForward.y = 0;
+
+            // 计算夹角 (0到180度)
+            float angle = Vector3.Angle(myForward, dirToTarget);
+
+            // 3. 判定：如果在扇形角度内的一半 (因为 Angle 算的是中线往两边的偏角)
+            // 比如扇形是90度，那么只要偏角小于45度就算在里面
+            if (angle <= action.attackAngle * 0.5f)
+            {
+                // 命中！造成伤害
+                target.TakeDamage(action.damageMultiplier);
+
+                // 生成打击特效
+                if (action.hitVFX != null)
+                {
+                    // 在敌人位置稍微高一点的地方生成
+                    Instantiate(action.hitVFX, hit.transform.position + Vector3.up, Quaternion.identity);
+                }
+            }
         }
     }
 
@@ -315,7 +341,7 @@ public class PlayerController : MonoBehaviour
             isRolling = false;
             rb.drag = defaultDrag;
             CancelInvoke(nameof(OnRollEnd));
-            if (currentWeaponHandler != null) currentWeaponHandler.DisableDamage();
+            // [已删除] DisableDamage 调用
         }
 
         FaceMouseInstant(); // 攻击瞬间朝向鼠标
@@ -334,12 +360,7 @@ public class PlayerController : MonoBehaviour
     {
         isAttacking = false;
 
-        // 🔥 [双重保险] 动作彻底结束时，再次强制关闭伤害
-        // 防止协程还在跑的时候动作被强制打断（虽然协程里也有检查，但多一层更稳）
-        if (currentWeaponHandler != null)
-        {
-            currentWeaponHandler.DisableDamage();
-        }
+        // [已删除] DisableDamage 调用，现在协程跑完自动就结束了，没有状态残留
 
         // 开启“连招中断倒计时”，比如2秒内不打下一刀，连招归零
         Invoke(nameof(ResetCombo), currentWeapon.comboResetTime);
@@ -380,8 +401,9 @@ public class PlayerController : MonoBehaviour
     {
         isAttacking = false;
 
-        // 翻滚时强制关闭伤害判定（防止带着伤害滚人堆里）
-        if (currentWeaponHandler != null) currentWeaponHandler.DisableDamage();
+        // [已删除] DisableDamage 调用
+        // 翻滚打断攻击时，因为协程里有 `if(!isAttacking) yield break;`
+        // 所以正在等待的伤害判定也会自动取消，非常安全。
 
         ResetCombo();
         CancelInvoke(nameof(OnAttackEnd));
@@ -467,4 +489,48 @@ public class PlayerController : MonoBehaviour
             rb.MovePosition(newPos);
         }
     }
-}
+
+    // ... (上面的代码保持不变)
+
+    // 🔥🔥🔥【新增】可视化调试辅助线 🔥🔥🔥
+    private void OnDrawGizmosSelected()
+    {
+        // 如果没有武器，就不画了
+        if (currentWeapon == null) return;
+
+        // 为了方便调试，默认画出“轻攻击第一下”的范围
+        // 如果你正在攻击，就画出“当前动作”的范围
+        AttackAction displayAction = null;
+
+        if (isAttacking)
+        {
+            displayAction = GetCurrentActionData();
+        }
+        else
+        {
+            // 没攻击时，默认显示轻攻击第一下，方便你在编辑器里调参数
+            displayAction = currentWeapon.GetLightAttack(0);
+        }
+
+        if (displayAction == null) return;
+
+        // 1. 设置颜色 (半透明红色)
+        Gizmos.color = new Color(1, 0, 0, 0.3f);
+
+        // 2. 画出攻击半径 (圆球)
+        Gizmos.DrawWireSphere(transform.position, displayAction.attackRadius);
+
+        // 3. 画出扇形的两条边
+        Vector3 forward = transform.forward;
+        Quaternion leftRayRotation = Quaternion.AngleAxis(-displayAction.attackAngle * 0.5f, Vector3.up);
+        Quaternion rightRayRotation = Quaternion.AngleAxis(displayAction.attackAngle * 0.5f, Vector3.up);
+
+        Vector3 leftRay = leftRayRotation * forward;
+        Vector3 rightRay = rightRayRotation * forward;
+
+        Gizmos.color = Color.red;
+        Gizmos.DrawRay(transform.position, leftRay * displayAction.attackRadius);
+        Gizmos.DrawRay(transform.position, rightRay * displayAction.attackRadius);
+    }
+
+} 
