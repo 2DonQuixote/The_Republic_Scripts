@@ -8,7 +8,6 @@ public class EnemyHealth : MonoBehaviour, IDamageable
     private float currentHealth;
 
     [Header("组件引用")]
-    // 🔥 新增：拖入挂着 EnemyHealthBar 的那个物体
     public EnemyHealthBar healthBar;
 
     private Animator animator;
@@ -23,7 +22,6 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         myCollider = GetComponent<Collider>();
         allRenderers = GetComponentsInChildren<Renderer>();
 
-        // 初始化血条（确保刚开始是满血隐藏状态）
         if (healthBar != null) healthBar.UpdateHealth(currentHealth, maxHealth);
     }
 
@@ -33,10 +31,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
 
         currentHealth -= amount;
 
-        // 🔥 新增：通知血条更新
         if (healthBar != null) healthBar.UpdateHealth(currentHealth, maxHealth);
-
-        Debug.Log($"{gameObject.name} 剩余血量: {currentHealth}");
 
         if (currentHealth <= 0)
         {
@@ -46,9 +41,16 @@ public class EnemyHealth : MonoBehaviour, IDamageable
 
     private void Die()
     {
+        if (isDead) return;
         isDead = true;
+
+        // 1. 物理停机：关闭碰撞体，防止尸体阻挡玩家或被继续攻击
         if (myCollider != null) myCollider.enabled = false;
 
+        // 2. 大脑停机：通知 AI 大脑彻底停止逻辑
+        GetComponent<BaseEnemy>()?.TriggerDeath();
+
+        // 3. 播放死亡动画
         if (animator != null)
         {
             animator.SetTrigger("Die");
@@ -58,27 +60,9 @@ public class EnemyHealth : MonoBehaviour, IDamageable
             ToggleVisuals(false);
         }
 
-        StartCoroutine(RespawnRoutine());
-    }
-
-    IEnumerator RespawnRoutine()
-    {
-        yield return new WaitForSeconds(3.0f);
-
-        // 复活逻辑
-        currentHealth = maxHealth;
-        isDead = false;
-
-        // 🔥 新增：复活满血后，通知血条（这会让血条自动隐藏）
-        if (healthBar != null) healthBar.UpdateHealth(currentHealth, maxHealth);
-
-        if (myCollider != null) myCollider.enabled = true;
-        ToggleVisuals(true);
-        if (animator != null)
-        {
-            animator.Play("Idle");
-            animator.ResetTrigger("Die");
-        }
+        // 4. 这里的销毁和复活逻辑全部删掉
+        // 尸体将一直留在场景中，直到你以后写好“坐篝火刷新”的逻辑来统一处理
+        Debug.Log($"{gameObject.name} 倒下了，等待篝火刷新。");
     }
 
     private void ToggleVisuals(bool isActive)
