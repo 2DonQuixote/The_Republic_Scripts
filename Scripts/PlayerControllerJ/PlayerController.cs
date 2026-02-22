@@ -52,6 +52,7 @@ public class PlayerController : MonoBehaviour
     private float lastRollTime = -100f;
     private float defaultDrag;
     private bool bufferedInputIsHeavy = false;
+    private float lastHeavyAttackTime = -100f; // 记录上一次释放重击的时间
 
     private void Awake()
     {
@@ -149,6 +150,17 @@ public class PlayerController : MonoBehaviour
         bool hasBufferedInput = (Time.time - lastInputTime) < inputBufferTime;
         if (!hasBufferedInput) return;
 
+        // 🔥【修改点 1】拦截重击冷却
+        if (bufferedInputIsHeavy && currentWeapon != null)
+        {
+            AttackAction heavyAction = currentWeapon.GetHeavyAttack(0);
+            if (heavyAction != null && Time.time < lastHeavyAttackTime + heavyAction.cooldown)
+            {
+                // 冷却没好，直接忽略这次重击输入
+                return;
+            }
+        }
+
         if (isRolling)
         {
             if ((Time.time - rollStartTime) >= rollDuration * rollAttackWindow)
@@ -192,6 +204,9 @@ public class PlayerController : MonoBehaviour
         {
             comboCount = 0;
             action = currentWeapon.GetHeavyAttack(0);
+
+            // 🔥【修改点 2】成功释放重击后，刷新冷却计时器
+            lastHeavyAttackTime = Time.time;
         }
         else
         {
@@ -397,13 +412,11 @@ public class PlayerController : MonoBehaviour
     // 🔥 外部状态接管接口 (供 PlayerReaction 等脚本调用)
     // ==========================================
 
-    // 查询玩家是否处于无敌状态 (比如翻滚中)
     public bool IsInvincible()
     {
         return isRolling;
     }
 
-    // 锁死控制 (被打断、被抓时调用)
     public void LockControl()
     {
         canMove = false;
@@ -415,7 +428,6 @@ public class PlayerController : MonoBehaviour
         if (rb != null) rb.velocity = Vector3.zero; // 物理急刹车
     }
 
-    // 恢复控制
     public void UnlockControl()
     {
         canMove = true;

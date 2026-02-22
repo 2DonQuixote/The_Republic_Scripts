@@ -10,33 +10,47 @@ public class MeleeEnemy : BaseEnemy
     [Tooltip("突进时的最小贴身距离。距离小于此值时怪物会动态刹车，防止像推土机一样推着玩家走")]
     public float pushPreventDistance = 1.0f;
 
-    [Header("=== 🩸 双手前抓 (投技) 配置 ===")]
-    [Tooltip("发动投技的概率")]
+    // 🔥🔥🔥 初见杀配置 🔥🔥🔥
+    [Header("=== 🚀 初见杀 (飞扑投技) 配置 ===")]
+    public bool enableAmbush = true;
+    public float ambushTriggerDistance = 6.0f;
+    public float ambushLungeDistance = 6.5f;
+    public float ambushLungeDelay = 0.1f;
+    public float ambushLungeDuration = 0.35f;
+    [Tooltip("飞扑扑空后的原地蹲起缓冲时间(破绽)")]
+    public float ambushEndDelay = 0f;
+
+    [Header("=== 🩸 双手前抓 (常规投技) 配置 ===")]
+    public float grabHitRange = 1.5f;
+
     [Range(0f, 1f)] public float grabChance = 0.2f;
-    [Tooltip("注意：因为会咬很多口，这里的伤害是【每一口】的伤害！建议调低，比如 10")]
     public float grabDamage = 10f;
-    public float grabLungeDistance = 2.0f; // 前抓的短促突进
+    public float grabLungeDistance = 2.0f;
     public float grabLungeDelay = 0.15f;
     public float grabLungeDuration = 0.2f;
+    [Tooltip("前抓扑空后的原地硬直时间(破绽)")]
+    public float grabEndDelay = 0f;
 
     [Space]
-    [Tooltip("抓取成功后，撕咬持续的时间 (秒)")]
+    [Tooltip("抓到玩家后，撕咬持续的时间")]
     public float siYaoDuration = 5.0f;
-    [Tooltip("撕咬结束后，向后滑行脱离的距离")]
+    [Tooltip("撕咬结束，向后滑行脱离的距离")]
     public float detachDistance = 2.5f;
-
-    // 🔥 保留：后撤延时
-    [Tooltip("触发挣脱动画后，延迟多久才向后弹开 (配合动画发力点)")]
+    [Tooltip("触发挣脱动画后，延迟多久开始向后滑")]
     public float detachDelay = 0.2f;
-
-    [Tooltip("向后脱离耗时")]
+    [Tooltip("向后滑行耗时")]
     public float detachDuration = 0.2f;
+
+    // 🔥🔥🔥 新增：挣脱后的硬直配置 🔥🔥🔥
+    [Tooltip("被玩家挣脱/踢开并向后滑行结束后，原地踉跄发呆的硬直时间")]
+    public float grabSuccessEndDelay = 1.5f;
 
     [Header("=== 常规轻/重击配置 ===")]
     public float lightDamage = 20f;
     public float lightLungeDistance = 1.0f;
     public float lightLungeDelay = 0.1f;
     public float lightLungeDuration = 0.15f;
+    public float lightEndDelay = 0f;
 
     [Space]
     [Range(0f, 1f)] public float heavyAttackChance = 0.3f;
@@ -44,92 +58,130 @@ public class MeleeEnemy : BaseEnemy
     public float heavyLungeDistance = 3.5f;
     public float heavyLungeDelay = 0.5f;
     public float heavyLungeDuration = 0.25f;
+    public float heavyEndDelay = 0f;
 
     // 内部逻辑标记
-    private enum AttackType { Light, Heavy, Grab }
+    private enum AttackType { Light, Heavy, Grab, Ambush }
     private AttackType currentType = AttackType.Light;
 
+    private bool hasAmbushed = false;
+    private bool isGrabSuccess = false;
+
     // ==========================================
-    // 1. 攻击决策逻辑
+    // 🌟 核心拦截：追击逻辑
+    // ==========================================
+    protected override void UpdateChaseState()
+    {
+        if (enableAmbush && !hasAmbushed && player != null)
+        {
+            float distance = Vector3.Distance(transform.position, player.position);
+
+            if (distance <= ambushTriggerDistance && distance > attackRange)
+            {
+                hasAmbushed = true;
+                ChangeState(AIState.Attack);
+                isAttacking = true;
+                ExecuteAmbushGrab();
+                return;
+            }
+        }
+
+        base.UpdateChaseState();
+    }
+
+    // ==========================================
+    // 具体执行器
     // ==========================================
     protected override void PerformAttack()
     {
-        float roll = Random.value;
+        isGrabSuccess = false;
 
-        // 优先出投技
+        float roll = Random.value;
         if (roll <= grabChance) ExecuteGrabAttack();
         else if (Random.value <= heavyAttackChance) ExecuteHeavyAttack();
         else ExecuteLightAttack();
     }
 
-    // ==========================================
-    // 2. 具体执行器
-    // ==========================================
+    private void ExecuteAmbushGrab()
+    {
+        currentType = AttackType.Ambush;
+        if (anim != null) anim.SetTrigger("FeiPu");
+        StartCoroutine(LungeForwardCoroutine(ambushLungeDistance, ambushLungeDelay, ambushLungeDuration, ambushEndDelay, true));
+        Debug.Log("<color=red>【初见杀警告】怪物从远处飞扑过来了！</color>");
+    }
+
     private void ExecuteGrabAttack()
     {
         currentType = AttackType.Grab;
-        if (anim != null) anim.SetTrigger("QianZhua"); // 触发起手式
-        StartCoroutine(LungeForwardCoroutine(grabLungeDistance, grabLungeDelay, grabLungeDuration));
-        Debug.Log("<color=orange>【投技警告】怪物双手前扑！</color>");
+        if (anim != null) anim.SetTrigger("QianZhua");
+        StartCoroutine(LungeForwardCoroutine(grabLungeDistance, grabLungeDelay, grabLungeDuration, grabEndDelay, true));
     }
 
     private void ExecuteHeavyAttack()
     {
         currentType = AttackType.Heavy;
         if (anim != null) anim.SetTrigger("Attack2");
-        StartCoroutine(LungeForwardCoroutine(heavyLungeDistance, heavyLungeDelay, heavyLungeDuration));
+        StartCoroutine(LungeForwardCoroutine(heavyLungeDistance, heavyLungeDelay, heavyLungeDuration, heavyEndDelay, false));
     }
 
     private void ExecuteLightAttack()
     {
         currentType = AttackType.Light;
         if (anim != null) anim.SetTrigger("Attack");
-        StartCoroutine(LungeForwardCoroutine(lightLungeDistance, lightLungeDelay, lightLungeDuration));
+        StartCoroutine(LungeForwardCoroutine(lightLungeDistance, lightLungeDelay, lightLungeDuration, lightEndDelay, false));
     }
 
     // ==========================================
-    // 3. 🌟 升级版：带动态刹车功能的突进引擎
+    // 🔥 升级版突进引擎：【前摇 -> 突进 -> 后摇缓冲】完美闭环
     // ==========================================
-    IEnumerator LungeForwardCoroutine(float distance, float delay, float duration)
+    IEnumerator LungeForwardCoroutine(float distance, float delay, float moveDuration, float endDelay, bool isGrabType)
     {
+        // 加一层物理急刹车保险
+        if (agent != null && agent.isActiveAndEnabled) agent.velocity = Vector3.zero;
+
+        // 1. 【前摇】等待时间 (此时可以自瞄转盘)
         if (delay > 0) yield return new WaitForSeconds(delay);
         if (isDead) yield break;
 
-        float speed = distance / duration;
+        // 🔥🔥🔥 核心新增：前摇结束，正式出刀！瞬间锁死怪物的方向，禁止自瞄！
+        isRotationLocked = true;
+
+        // 2. 【突进】位移时间
+        float speed = distance / moveDuration;
         float timer = 0f;
 
-        while (timer < duration)
+        // 👇 就是这里！之前不小心被删掉的突进循环补回来了，timer 也有用武之地了
+        while (timer < moveDuration)
         {
             if (isDead || agent == null || !agent.isActiveAndEnabled) break;
 
-            // ------------------------------------------------
-            // 🔥 核心优化：动态刹车检测
-            // ------------------------------------------------
             bool shouldMove = true;
             if (player != null)
             {
                 float currentDist = Vector3.Distance(transform.position, player.position);
-                // 如果怪物离玩家太近了，就踩死刹车（不执行位移代码）
-                if (currentDist <= pushPreventDistance)
-                {
-                    shouldMove = false;
-                }
+                if (currentDist <= pushPreventDistance) shouldMove = false;
             }
 
-            // 只有在允许移动（没贴脸）的情况下才往前冲
-            if (shouldMove)
-            {
-                agent.Move(transform.forward * speed * Time.deltaTime);
-            }
+            if (shouldMove) agent.Move(transform.forward * speed * Time.deltaTime);
 
-            // ⚠️ 极其重要：无论是否移动，时间照常流逝！这样才能保证动画与状态不脱节
             timer += Time.deltaTime;
             yield return null;
         }
+
+        // 3. 【后摇缓冲】原地不动，播放收招/缓冲动画 (针对轻重击和扑空的投技)
+        if (endDelay > 0) yield return new WaitForSeconds(endDelay);
+        if (isDead) yield break;
+
+        // 4. 【结算解锁】
+        // 如果是投技，并且刚刚成功抓到了玩家，那么不需要在这里解锁，交给撕咬协程去解
+        if (isGrabType && isGrabSuccess) yield break;
+
+        // 否则，彻底解除锁定，怪物开始走动追玩家
+        OnAttackAnimEnd();
     }
 
     // ==========================================
-    // 4. 🔥 投技专属判定：尝试抓取
+    // 投技专属判定：尝试抓取
     // ==========================================
     public void TryGrab()
     {
@@ -143,34 +195,24 @@ public class MeleeEnemy : BaseEnemy
 
         float distance = Vector3.Distance(transform.position, player.position);
 
-        if (distance <= grabLungeDistance + hitTolerance)
+        if (distance <= grabHitRange + hitTolerance)
         {
             Debug.Log("<color=red>【抓取成功！】进入长达 5 秒的残酷撕咬！</color>");
+
+            isGrabSuccess = true;
 
             if (agent != null) agent.isStopped = true;
             if (anim != null) anim.SetTrigger("GrabSuccess");
 
-            // ==========================================
-            // 🔥 架构更新：通知玩家的专属受击脚本！
-            // ==========================================
             PlayerReaction reaction = player.GetComponent<PlayerReaction>();
-            if (reaction != null)
-            {
-                // 把怪物的撕咬时长传给玩家，让玩家配合演出
-                reaction.ApplyGrab(siYaoDuration);
-            }
-            // ==========================================
+            if (reaction != null) reaction.ApplyGrab(siYaoDuration);
 
             StartCoroutine(SiYaoCoroutine());
         }
         else
         {
-            Debug.Log("<color=grey>抓取落空，发送 GrabFail 指令，准备恢复...</color>");
+            Debug.Log("<color=grey>抓取落空，发送 GrabFail 指令，等待缓冲时间结束...</color>");
             if (anim != null) anim.SetTrigger("GrabFail");
-
-            // 🔥🔥🔥 核心修复 1：抓空了，手动解除攻击锁定！
-            // 告诉大脑这招打完了，可以继续追玩家或者放下一招了
-            OnAttackAnimEnd();
         }
     }
 
@@ -181,31 +223,34 @@ public class MeleeEnemy : BaseEnemy
         yield return new WaitForSeconds(siYaoDuration);
         if (isDead) yield break;
 
-        // 2. 5 秒时间到！触发挣脱动画
+        // 2. 触发挣脱推开动画
         if (anim != null) anim.SetTrigger("ZhengTuo");
-        Debug.Log("<color=yellow>撕咬结束，准备挣脱！</color>");
 
-        // 3. 🔥 等待挣脱动画的发力点 (比如推开玩家的那一瞬间)
+        // 3. 动画发力前摇
         if (detachDelay > 0) yield return new WaitForSeconds(detachDelay);
         if (isDead) yield break;
 
-        // 4. 配合动画发力，往后滑行拉开距离
+        // 4. 向后滑行脱离
         float speed = detachDistance / detachDuration;
-        float timer = 0f;
-        while (timer < detachDuration)
+        float slideTimer = 0f;
+        while (slideTimer < detachDuration)
         {
             if (isDead || agent == null || !agent.isActiveAndEnabled) break;
             agent.Move(-transform.forward * speed * Time.deltaTime);
-            timer += Time.deltaTime;
+            slideTimer += Time.deltaTime;
             yield return null;
         }
 
-        // 🔥🔥🔥 核心修复 2：撕咬并后撤彻底结束，手动解除攻击锁定！
+        // 5. 🔥🔥🔥 新增：滑行结束后，原地踉跄喘息！(给玩家反击的机会)
+        if (grabSuccessEndDelay > 0) yield return new WaitForSeconds(grabSuccessEndDelay);
+        if (isDead) yield break;
+
+        // 6. 喘息结束，彻底解锁，大脑恢复运转！
         OnAttackAnimEnd();
     }
 
     // ==========================================
-    // 5. 伤害判定
+    // 伤害判定
     // ==========================================
     public void DealDamage()
     {
@@ -213,8 +258,8 @@ public class MeleeEnemy : BaseEnemy
 
         float distance = Vector3.Distance(transform.position, player.position);
 
-        // 如果是投技撕咬，判定范围可以极其宽松（因为已经抓到了）
-        float currentHitRange = (currentType == AttackType.Grab) ? 5.0f : attackRange;
+        bool isGrabType = (currentType == AttackType.Grab || currentType == AttackType.Ambush);
+        float currentHitRange = isGrabType ? 5.0f : attackRange;
 
         if (distance <= currentHitRange + hitTolerance)
         {
@@ -226,11 +271,11 @@ public class MeleeEnemy : BaseEnemy
                 {
                     case AttackType.Light: finalDamage = lightDamage; break;
                     case AttackType.Heavy: finalDamage = heavyDamage; break;
-                    case AttackType.Grab: finalDamage = grabDamage; break;
+                    case AttackType.Grab:
+                    case AttackType.Ambush:
+                        finalDamage = grabDamage;
+                        break;
                 }
-
-                // 🔥 注意：这里根据我们改的接口规范，默认就会触发 true 的物理硬直表现
-                // 怪物撕咬期间由于玩家身上有 isGrabbed 状态锁，不会被打断
                 target.TakeDamage(finalDamage);
             }
         }

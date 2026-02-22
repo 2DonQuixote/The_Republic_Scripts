@@ -1,6 +1,6 @@
 ﻿using UnityEngine;
 using UnityEngine.AI;
-using System.Collections; // 🔥 必须加上这个才能用协程
+using System.Collections;
 
 // 【架构规范】抽象基类：作为所有怪物的模板，承载寻路、状态切换等通用逻辑
 public abstract class BaseEnemy : MonoBehaviour
@@ -10,7 +10,7 @@ public abstract class BaseEnemy : MonoBehaviour
     // ==========================================
     public enum AIState
     {
-        Idle,       // 站着发呆 / 巡逻
+        Idle,       // 发呆 / 巡逻
         Chase,      // 追逐玩家
         Attack,     // 正在攻击
         Dead        // 死亡
@@ -21,14 +21,23 @@ public abstract class BaseEnemy : MonoBehaviour
     public float loseAggroRange = 15f;
     public float attackRange = 1.5f;
     public float stopDistance = 1.2f;
-    public float moveSpeed = 3.5f;
+    [Tooltip("追击玩家时的奔跑速度")]
+    public float moveSpeed = 4.5f;
     public float attackCooldown = 2.0f;
 
-    // 🔥🔥🔥 新增：受击与击退配置 🔥🔥🔥
+    // 🔥🔥🔥 新增：巡逻专属配置 🔥🔥🔥
+    [Header("=== 🚶 巡逻 (Patrol) 配置 ===")]
+    [Tooltip("勾选则会在 Idle 状态下四处溜达，不勾则原地站岗")]
+    public bool enablePatrol = true;
+    [Tooltip("巡逻时的慢走速度 (需要与你的 Walk 动画匹配)")]
+    public float patrolSpeed = 1.5f;
+    [Tooltip("围绕出生点巡逻的最大活动半径")]
+    public float patrolRadius = 6.0f;
+    [Tooltip("走到目标点后，停下来发呆思考人生的时间")]
+    public float patrolWaitTime = 2.5f;
+
     [Header("=== 受击反馈设置 ===")]
-    [Tooltip("每次挨打被击退的距离 (米)")]
     public float knockbackDistance = 1.5f;
-    [Tooltip("击退滑行的耗时 (秒)")]
     public float knockbackDuration = 0.15f;
 
     [Header("=== 状态监控 (仅供查看) ===")]
@@ -44,6 +53,14 @@ public abstract class BaseEnemy : MonoBehaviour
     protected bool isAttacking = false;
     protected bool isDead = false;
 
+    // 🔥 新增：转向锁。出招后锁死，禁止原地转盘！
+    protected bool isRotationLocked = false;
+
+    // 🔥 巡逻内部状态
+    protected Vector3 startPosition; // 领地中心（出生点）
+    protected float patrolTimer = 0f;
+    protected bool isWaiting = false;
+
     // ==========================================
     // 1. 初始化阶段
     // ==========================================
@@ -54,6 +71,9 @@ public abstract class BaseEnemy : MonoBehaviour
 
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null) player = playerObj.transform;
+
+        // 🔥 记住出生地，作为巡逻领地中心
+        startPosition = transform.position;
 
         if (agent != null)
         {
@@ -84,19 +104,86 @@ public abstract class BaseEnemy : MonoBehaviour
 
         if (anim != null && !isDead)
         {
-            anim.SetFloat("Speed", agent.velocity.magnitude);
+            // 1. 保留我们之前加的平滑阻尼
+            anim.SetFloat("Speed", agent.velocity.magnitude, 0.1f, Time.deltaTime);
+
+            // 🔥 2. 核心新增：告诉 Animator 现在是不是战斗状态？
+            // 只要不是在 Idle（发呆/巡逻），就是在战斗中！
+            bool inCombat = (currentState == AIState.Chase || currentState == AIState.Attack);
+            anim.SetBool("InCombat", inCombat);
         }
     }
 
     // ==========================================
-    // 3. 各状态具体逻辑
+    // 3. 🌟 重写：待机与巡逻逻辑
     // ==========================================
     protected virtual void UpdateIdleState()
     {
+        // 1. 索敌逻辑：优先看玩家在不在视野内
         float distance = Vector3.Distance(transform.position, player.position);
-        if (distance <= detectionRange) ChangeState(AIState.Chase);
+        if (distance <= detectionRange)
+        {
+            // 发现玩家，切入战斗！
+            agent.speed = moveSpeed; // 切换为狂奔速度
+            ChangeState(AIState.Chase);
+            return;
+        }
+
+        // 2. 巡逻溜达逻辑
+        if (enablePatrol && agent != null && agent.isActiveAndEnabled)
+        {
+            agent.speed = patrolSpeed; // 强制切换为散步速度
+
+            if (isWaiting)
+            {
+                // 发呆中，累计时间
+                patrolTimer += Time.deltaTime;
+                if (patrolTimer >= patrolWaitTime)
+                {
+                    isWaiting = false;
+                    SetNewPatrolDestination(); // 时间到，找下一个目标点
+                }
+            }
+            else
+            {
+                // 正在散步中，检查是否走到目的地了
+                // pathPending 表示还在算路，remainingDistance 是剩余距离
+                if (!agent.pathPending && agent.remainingDistance <= 0.2f)
+                {
+                    // 走到了！开始发呆
+                    isWaiting = true;
+                    patrolTimer = 0f;
+                }
+            }
+        }
     }
 
+    // 🔥 生成安全的随机巡逻点
+    private void SetNewPatrolDestination()
+    {
+        // 在出生点周围生成一个随机的二维圆内坐标
+        Vector2 randomDir = Random.insideUnitCircle * patrolRadius;
+        Vector3 randomPos = startPosition + new Vector3(randomDir.x, 0, randomDir.y);
+
+        // ⚠️ 极其重要：验证这个随机点是不是在合法的寻路网格上
+        NavMeshHit hit;
+        // 采样半径设为 patrolRadius，如果在范围内找到合法的地板，就赋值给 hit
+        if (NavMesh.SamplePosition(randomPos, out hit, patrolRadius, NavMesh.AllAreas))
+        {
+            agent.SetDestination(hit.position);
+            agent.isStopped = false;
+        }
+        else
+        {
+            // 万一真随到了不可达的地方（比如死角），干脆原地再等一会儿
+            isWaiting = true;
+            patrolTimer = 0f;
+        }
+    }
+
+    // ==========================================
+    // 追逐逻辑
+    // ==========================================
     protected virtual void UpdateChaseState()
     {
         float distance = Vector3.Distance(transform.position, player.position);
@@ -107,9 +194,13 @@ public abstract class BaseEnemy : MonoBehaviour
             return;
         }
 
+        // 脱战逻辑
         if (distance > loseAggroRange)
         {
             agent.isStopped = true;
+            // 脱战后，重置巡逻状态，让它先发一会儿呆再回去巡逻
+            isWaiting = true;
+            patrolTimer = 0f;
             ChangeState(AIState.Idle);
             return;
         }
@@ -129,17 +220,22 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         agent.isStopped = true;
 
-        Vector3 direction = (player.position - transform.position).normalized;
-        direction.y = 0;
-        if (direction != Vector3.zero)
+        // 🔥 核心修复：如果方向没被锁死，才允许怪物转身盯着玩家
+        if (!isRotationLocked)
         {
-            transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
+            Vector3 direction = (player.position - transform.position).normalized;
+            direction.y = 0;
+            if (direction != Vector3.zero)
+            {
+                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
+            }
         }
 
         float distance = Vector3.Distance(transform.position, player.position);
 
         if (!isAttacking && distance > attackRange)
         {
+            agent.speed = moveSpeed; // 确保切回追逐时是跑动速度
             ChangeState(AIState.Chase);
             return;
         }
@@ -152,17 +248,11 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    // ==========================================
-    // 4. 派生接口
-    // ==========================================
     protected virtual void PerformAttack()
     {
         Debug.LogWarning("BaseEnemy 的 PerformAttack 未被子类重写！");
     }
 
-    // ==========================================
-    // 5. 辅助与联动
-    // ==========================================
     protected void ChangeState(AIState newState)
     {
         if (currentState == newState) return;
@@ -172,6 +262,7 @@ public abstract class BaseEnemy : MonoBehaviour
     public virtual void OnAttackAnimEnd()
     {
         isAttacking = false;
+        isRotationLocked = false; // 🔥 打完收招结束了，解开脖子的锁
     }
 
     public virtual void TriggerDeath()
@@ -181,64 +272,54 @@ public abstract class BaseEnemy : MonoBehaviour
         if (agent != null) agent.isStopped = true;
     }
 
-    // ==========================================
-    // 6. 🔥 核心：受击打断与击退处理
-    // ==========================================
     public virtual void OnHitInterrupt()
     {
         isAttacking = false;
+        isRotationLocked = false; // 🔥 挨打中断了，也要解开锁
 
         if (agent != null && agent.isActiveAndEnabled)
         {
             agent.isStopped = true;
         }
 
-        // 🔥 强行掐死正在进行的突进/撕咬/旧的击退协程，防止“一边挨打一边滑步咬人”或连续被连击导致速度叠加
         StopAllCoroutines();
 
-        // 重置多余的指令，防止怪物清醒后瞎扑腾
         if (anim != null)
         {
             anim.ResetTrigger("Attack");
             anim.ResetTrigger("Attack2");
             anim.ResetTrigger("QianZhua");
             anim.ResetTrigger("GrabSuccess");
+            anim.ResetTrigger("FeiPu");
         }
 
+        agent.speed = moveSpeed; // 挨打醒来后肯定是想跑着追你
         ChangeState(AIState.Chase);
 
-        // 🔥 启动平滑击退协程
         if (gameObject.activeInHierarchy && !isDead)
         {
             StartCoroutine(KnockbackCoroutine());
         }
     }
 
-    // 🌟 平滑击退引擎
     protected IEnumerator KnockbackCoroutine()
     {
         if (agent == null || !agent.isActiveAndEnabled) yield break;
 
         float timer = 0f;
         float speed = knockbackDistance / knockbackDuration;
-
-        // 往怪物的正后方推 (因为怪物打人时通常是面朝玩家的，所以向后退最合理)
         Vector3 pushDir = -transform.forward;
 
         while (timer < knockbackDuration)
         {
             if (isDead || agent == null || !agent.isActiveAndEnabled) break;
 
-            // 使用 NavMeshAgent.Move 保证不会卡进墙里或掉出地图
             agent.Move(pushDir * speed * Time.deltaTime);
             timer += Time.deltaTime;
             yield return null;
         }
     }
 
-    // ==========================================
-    // 7. 策划可视化
-    // ==========================================
     private void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.yellow;
@@ -249,5 +330,16 @@ public abstract class BaseEnemy : MonoBehaviour
 
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRange);
+
+        if (Application.isPlaying)
+        {
+            Gizmos.color = new Color(0, 1, 0, 0.2f);
+            Gizmos.DrawWireSphere(startPosition, patrolRadius);
+        }
+        else
+        {
+            Gizmos.color = new Color(0, 1, 0, 0.2f);
+            Gizmos.DrawWireSphere(transform.position, patrolRadius);
+        }
     }
 }
