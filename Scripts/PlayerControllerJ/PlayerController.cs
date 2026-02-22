@@ -533,4 +533,43 @@ public class PlayerController : MonoBehaviour
         Gizmos.DrawRay(transform.position, rightRay * displayAction.attackRadius);
     }
 
+
+    // ==========================================
+    // 🔥 外部硬控接口：被投机抓取
+    // ==========================================
+    public void ApplyGrab(float duration)
+    {
+        // 1. 锁死玩家输入
+        canMove = false;
+
+        // 2. 强行打断当前正在进行的攻击或翻滚
+        isAttacking = false;
+        isRolling = false;
+        ResetCombo();
+        CancelInvoke(); // 取消所有等待中的后摇回调
+
+        // 3. 物理急刹车：防止玩家带着惯性滑走
+        if (rb != null) rb.velocity = Vector3.zero;
+
+        // 4. 播放被咬动画 (开启硬控开关)
+        if (animator != null) animator.SetBool("IsGrabbed", true);
+
+        // 5. 开启解绑倒计时
+        StartCoroutine(GrabRecoverCoroutine(duration));
+
+        Debug.Log($"<color=red>玩家被投技命中！失去控制 {duration} 秒！</color>");
+    }
+
+    private IEnumerator GrabRecoverCoroutine(float duration)
+    {
+        // 乖乖等怪物咬完
+        yield return new WaitForSeconds(duration);
+
+        // 恢复自由
+        canMove = true;
+        if (animator != null) animator.SetBool("IsGrabbed", false);
+
+        Debug.Log("<color=green>玩家挣脱投技，恢复控制！</color>");
+    }
+
 } 
