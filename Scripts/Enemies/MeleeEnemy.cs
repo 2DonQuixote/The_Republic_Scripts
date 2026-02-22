@@ -151,13 +151,13 @@ public class MeleeEnemy : BaseEnemy
             if (anim != null) anim.SetTrigger("GrabSuccess");
 
             // ==========================================
-            // 🔥 新增：通知玩家被抓了！并传递撕咬时长
+            // 🔥 架构更新：通知玩家的专属受击脚本！
             // ==========================================
-            PlayerController pc = player.GetComponent<PlayerController>();
-            if (pc != null)
+            PlayerReaction reaction = player.GetComponent<PlayerReaction>();
+            if (reaction != null)
             {
                 // 把怪物的撕咬时长传给玩家，让玩家配合演出
-                pc.ApplyGrab(siYaoDuration);
+                reaction.ApplyGrab(siYaoDuration);
             }
             // ==========================================
 
@@ -167,6 +167,10 @@ public class MeleeEnemy : BaseEnemy
         {
             Debug.Log("<color=grey>抓取落空，发送 GrabFail 指令，准备恢复...</color>");
             if (anim != null) anim.SetTrigger("GrabFail");
+
+            // 🔥🔥🔥 核心修复 1：抓空了，手动解除攻击锁定！
+            // 告诉大脑这招打完了，可以继续追玩家或者放下一招了
+            OnAttackAnimEnd();
         }
     }
 
@@ -195,6 +199,9 @@ public class MeleeEnemy : BaseEnemy
             timer += Time.deltaTime;
             yield return null;
         }
+
+        // 🔥🔥🔥 核心修复 2：撕咬并后撤彻底结束，手动解除攻击锁定！
+        OnAttackAnimEnd();
     }
 
     // ==========================================
@@ -221,6 +228,9 @@ public class MeleeEnemy : BaseEnemy
                     case AttackType.Heavy: finalDamage = heavyDamage; break;
                     case AttackType.Grab: finalDamage = grabDamage; break;
                 }
+
+                // 🔥 注意：这里根据我们改的接口规范，默认就会触发 true 的物理硬直表现
+                // 怪物撕咬期间由于玩家身上有 isGrabbed 状态锁，不会被打断
                 target.TakeDamage(finalDamage);
             }
         }

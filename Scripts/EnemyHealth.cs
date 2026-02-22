@@ -2,6 +2,7 @@
 using System.Collections;
 
 public class EnemyHealth : MonoBehaviour, IDamageable
+
 {
     [Header("属性设置")]
     [SerializeField] private float maxHealth = 100f;
@@ -25,7 +26,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         if (healthBar != null) healthBar.UpdateHealth(currentHealth, maxHealth);
     }
 
-    public void TakeDamage(float amount)
+    public void TakeDamage(float amount, bool triggerHitReaction = true)
     {
         if (isDead) return;
 
@@ -36,6 +37,17 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         if (currentHealth <= 0)
         {
             Die();
+        }
+        else
+        {
+            // 🔥 激活受击动画！
+            if (triggerHitReaction && animator != null)
+            {
+                animator.SetTrigger("Hit");
+
+                // ⚠️ 极其重要：通知怪物的 AI 大脑“你被打断了！”
+                GetComponent<BaseEnemy>()?.OnHitInterrupt();
+            }
         }
     }
 

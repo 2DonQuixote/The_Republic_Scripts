@@ -42,9 +42,12 @@ public class StatusManager : MonoBehaviour
                 if (buff.tickTimer >= buff.data.tickInterval)
                 {
                     buff.tickTimer = 0f;
-                    if (targetHealth != null) targetHealth.TakeDamage(buff.data.damagePerTick);
+
+                    // 🔥🔥🔥 核心修改在这里：传入 false ！！！
+                    if (targetHealth != null) targetHealth.TakeDamage(buff.data.damagePerTick, false);
                 }
             }
+        
         }
     }
 

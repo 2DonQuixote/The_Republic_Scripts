@@ -1,6 +1,5 @@
-// ÕâÊÇÒ»¸ö½Ó¿Ú£¬²»ÊÇÀà£¬²»ĞèÒª¹ÒÔØµ½ÎïÌåÉÏ
-public interface IDamageable
+ï»¿public interface IDamageable
 {
-    // ÈÎºÎÊµÏÖÕâ¸ö½Ó¿ÚµÄÎïÌå£¬±ØĞëÓµÓĞÕâ¸ö·½·¨
-    void TakeDamage(float amount);
+    // ğŸ”¥ æŠŠç¬¬äºŒä¸ªå‚æ•°åŠ ä¸Šï¼Œè®©åˆåŒä¸ä»£ç ä¿æŒä¸€è‡´
+    void TakeDamage(float amount, bool triggerHitReaction = true);
 }
