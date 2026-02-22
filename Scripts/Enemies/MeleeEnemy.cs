@@ -139,30 +139,38 @@ public class MeleeEnemy : BaseEnemy
         // 加一层物理急刹车保险
         if (agent != null && agent.isActiveAndEnabled) agent.velocity = Vector3.zero;
 
-        // 1. 【前摇】等待时间 (此时可以自瞄转盘)
+        // 1. 【前摇】等待时间
         if (delay > 0) yield return new WaitForSeconds(delay);
         if (isDead) yield break;
 
-        // 🔥🔥🔥 核心新增：前摇结束，正式出刀！瞬间锁死怪物的方向，禁止自瞄！
-        isRotationLocked = true;
+        // 删除了方向锁死，怪物会在突进期间继续盯着玩家
 
         // 2. 【突进】位移时间
         float speed = distance / moveDuration;
         float timer = 0f;
 
-        // 👇 就是这里！之前不小心被删掉的突进循环补回来了，timer 也有用武之地了
+        // 🔥🔥🔥 核心新增：刹车锁！只要刹过一次车，这招就不许再往前滑了
+        bool hasBraked = false;
+
         while (timer < moveDuration)
         {
             if (isDead || agent == null || !agent.isActiveAndEnabled) break;
 
-            bool shouldMove = true;
-            if (player != null)
+            // 只要没触发过刹车，就时刻检测玩家距离
+            if (player != null && !hasBraked)
             {
                 float currentDist = Vector3.Distance(transform.position, player.position);
-                if (currentDist <= pushPreventDistance) shouldMove = false;
+                if (currentDist <= pushPreventDistance)
+                {
+                    hasBraked = true; // 🔥 触发刹车！彻底焊死，这招剩余的时间里绝不许再往前动！
+                }
             }
 
-            if (shouldMove) agent.Move(transform.forward * speed * Time.deltaTime);
+            // 只有在没刹车的情况下，才允许往前滑
+            if (!hasBraked)
+            {
+                agent.Move(transform.forward * speed * Time.deltaTime);
+            }
 
             timer += Time.deltaTime;
             yield return null;
@@ -185,7 +193,8 @@ public class MeleeEnemy : BaseEnemy
     // ==========================================
     public void TryGrab()
     {
-        if (player == null || isDead) return;
+        // 🔥 核心补充：加上了 isGrabSuccess，防止鬼畜动画多次触发导致重叠撕咬 Bug！
+        if (player == null || isDead || isGrabSuccess) return;
 
         if (anim != null)
         {
@@ -241,7 +250,7 @@ public class MeleeEnemy : BaseEnemy
             yield return null;
         }
 
-        // 5. 🔥🔥🔥 新增：滑行结束后，原地踉跄喘息！(给玩家反击的机会)
+        // 5. 滑行结束后，原地踉跄喘息！(给玩家反击的机会)
         if (grabSuccessEndDelay > 0) yield return new WaitForSeconds(grabSuccessEndDelay);
         if (isDead) yield break;
 

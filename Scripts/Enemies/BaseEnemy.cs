@@ -40,6 +40,13 @@ public abstract class BaseEnemy : MonoBehaviour
     public float knockbackDistance = 1.5f;
     public float knockbackDuration = 0.15f;
 
+    // 🔥🔥🔥 新增：死亡击飞配置 🔥🔥🔥
+    [Header("=== 💀 死亡表现 (Death Knockback) ===")]
+    [Tooltip("死亡瞬间被击飞的距离。设为0则原地软倒")]
+    public float deathKnockbackDistance = 3.0f;
+    [Tooltip("在地上滑行退后的时间 (建议匹配死亡动画的前半段落地时间)")]
+    public float deathKnockbackDuration = 0.4f;
+
     [Header("=== 状态监控 (仅供查看) ===")]
     public AIState currentState = AIState.Idle;
 
@@ -265,13 +272,67 @@ public abstract class BaseEnemy : MonoBehaviour
         isRotationLocked = false; // 🔥 打完收招结束了，解开脖子的锁
     }
 
+    // ==========================================
+    // 💀 死亡指令接收与击飞处理
+    // ==========================================
     public virtual void TriggerDeath()
     {
         isDead = true;
         currentState = AIState.Dead;
-        if (agent != null) agent.isStopped = true;
+
+        // 🔪 核心保护：强行叫停可能正在突进/飞扑的协程，防止尸体自己往前飞
+        StopAllCoroutines();
+
+        if (agent != null && agent.isActiveAndEnabled)
+        {
+            agent.isStopped = true;
+
+            // 判断需不需要击飞表现
+            if (deathKnockbackDistance > 0)
+            {
+                StartCoroutine(DeathKnockbackCoroutine());
+            }
+            else
+            {
+                // 如果距离填 0，则原地倒下，彻底关闭寻路防止挡路
+                agent.enabled = false;
+            }
+        }
     }
 
+    // 💨 死亡击飞物理滑行协程
+    protected IEnumerator DeathKnockbackCoroutine()
+    {
+        float timer = 0f;
+        float speed = deathKnockbackDistance / deathKnockbackDuration;
+
+        // 智能计算被击飞的方向：远离玩家
+        Vector3 pushDir = -transform.forward;
+        if (player != null)
+        {
+            pushDir = (transform.position - player.position).normalized;
+            pushDir.y = 0; // 贴地滑行
+        }
+
+        while (timer < deathKnockbackDuration)
+        {
+            if (agent == null || !agent.isActiveAndEnabled) break;
+
+            agent.Move(pushDir * speed * Time.deltaTime);
+            timer += Time.deltaTime;
+            yield return null;
+        }
+
+        // 滑行彻底结束，让出寻路网格，防止地上的尸体卡住其他活着的怪物
+        if (agent != null)
+        {
+            agent.enabled = false;
+        }
+    }
+
+    // ==========================================
+    // 受击打断
+    // ==========================================
     public virtual void OnHitInterrupt()
     {
         isAttacking = false;
