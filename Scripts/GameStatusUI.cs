@@ -1,5 +1,5 @@
 ﻿using UnityEngine;
-using DG.Tweening; // 记得引用这个，我们要用 DOShake 或者 DOScale
+using DG.Tweening;
 
 public class GameStatusUI : MonoBehaviour
 {
@@ -9,22 +9,24 @@ public class GameStatusUI : MonoBehaviour
 
     private void Awake() => Instance = this;
 
-    // 1. 显示已激活 Buff (倒计时模式)
-    public void ShowStatus(string content, float duration, Color barColor, bool isStackable)
+    // 1. 显示/刷新 Active Buff (倒计时模式)
+    public void ShowStatus(string content, float duration, Color barColor)
     {
-        if (!isStackable)
+        // 先找找有没有同名的条子（无论是正在积累的，还是已经激活的）
+        foreach (Transform child in container)
         {
-            foreach (Transform child in container)
+            var controller = child.GetComponent<StatusItemController>();
+            if (controller != null && controller.GetTitle() == content)
             {
-                var controller = child.GetComponent<StatusItemController>();
-                if (controller != null && controller.GetTitle() == content)
-                {
-                    controller.ResetTimer(duration);
-                    return;
-                }
+                // 找到了！直接复用它，从积累模式切换为倒计时模式
+                controller.ResetTimer(duration);
+                // 💡 这里顺便可以重置一下颜色，确保颜色正确
+                if (controller.durationBar != null) controller.durationBar.color = barColor;
+                return;
             }
         }
 
+        // 没找到（可能是直接获得Buff），新建一个
         GameObject newItem = Instantiate(statusItemPrefab, container);
         var ctrl = newItem.GetComponent<StatusItemController>();
         if (ctrl != null)
@@ -33,14 +35,15 @@ public class GameStatusUI : MonoBehaviour
         }
     }
 
-    // 2. 显示积累条 (百分比模式)
+    // 2. 更新积累进度 (百分比模式)
     public void UpdateBuildupUI(string buffName, float current, float max, Color color)
     {
-        string uiTitle = $"[积累] {buffName}";
+        // 🔥 核心修改：去掉 "[积累]" 前缀！让它和 ShowStatus 用同一个名字
+        string uiTitle = buffName;
 
         StatusItemController targetCtrl = null;
 
-        // 寻找现有的条子
+        // 寻找现有条子
         foreach (Transform child in container)
         {
             var controller = child.GetComponent<StatusItemController>();
@@ -51,25 +54,31 @@ public class GameStatusUI : MonoBehaviour
             }
         }
 
-        // 逻辑 A：积累值归零，且条子存在 -> 删掉
+        // 归零逻辑：只有当确实有一个“纯积累”条时才删除
+        // 如果这个条子已经变成了 Active Buff（在倒计时），我们就不应该在这里删它
         if (current <= 0)
         {
-            if (targetCtrl != null) targetCtrl.RemoveSelf();
+            // 这里我们不做删除操作，交给 StatusManager 的逻辑去控制
+            // 或者仅仅当它处于“非激活”状态时才删 (这个判断比较复杂，留给 Manager 控制更稳)
+            if (targetCtrl != null)
+            {
+                // 只有当条子是满的或者空的，且没有在倒计时（很难判断），才移除
+                // 简单处理：StatusManager 会在激活时接管，在衰减归零时调用这个。
+                // 如果衰减归零了，说明没激活，直接删。
+                targetCtrl.RemoveSelf();
+            }
             return;
         }
 
-        // 逻辑 B：积累值 > 0，但没有条子 -> 新建一个
+        // 新建条子
         if (targetCtrl == null)
         {
             GameObject newItem = Instantiate(statusItemPrefab, container);
             targetCtrl = newItem.GetComponent<StatusItemController>();
 
-            // 🔥 简单的进场动画 (这里就是之前报错的地方，现在修好了)
-            newItem.transform.localScale = Vector3.zero;
-            newItem.transform.DOScale(1f, 0.2f).SetEase(Ease.OutBack);
         }
 
-        // 逻辑 C：刷新数值
+        // 刷新数值
         if (targetCtrl != null)
         {
             targetCtrl.UpdateBuildup(uiTitle, current, max, color);

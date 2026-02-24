@@ -14,7 +14,7 @@ public class StatusManager : MonoBehaviour
         {
             this.data = data;
             this.timer = data.duration;
-            this.tickTimer = data.triggerImmediately ? data.tickInterval : 0f;
+            this.tickTimer = 0f;
         }
     }
 
@@ -24,11 +24,10 @@ public class StatusManager : MonoBehaviour
         public float decayPauseTimer;
     }
 
-    // 玩家的额外抗性字典
     private Dictionary<StatusType, float> resistanceBonuses = new Dictionary<StatusType, float>();
-
-    public List<ActiveBuff> currentBuffs = new List<ActiveBuff>();
     private Dictionary<BuffData, BuildupTracker> buildupTrackers = new Dictionary<BuffData, BuildupTracker>();
+    public List<ActiveBuff> currentBuffs = new List<ActiveBuff>();
+
     private IDamageable targetHealth;
 
     private void Awake() { targetHealth = GetComponent<IDamageable>(); }
@@ -39,23 +38,65 @@ public class StatusManager : MonoBehaviour
         HandleBuildupDecay();
     }
 
-    // 🔥 核心修复：计算最终阈值 (这里用的是 baseThreshold)
-    public float GetRealThreshold(BuffData data)
+    // ==========================================
+    // 增加积累值
+    // ==========================================
+    public void AddStatusBuildup(BuffData data, float amount)
     {
-        float bonus = 0f;
-        if (resistanceBonuses.ContainsKey(data.type))
+        if (data == null) return;
+
+        // 1. 如果 Buff 已经激活
+        var activeBuff = currentBuffs.Find(x => x.data == data);
+        if (activeBuff != null)
         {
-            bonus = resistanceBonuses[data.type];
+            // 如果允许刷新时间
+            if (data.refreshTimeOnHit)
+            {
+                activeBuff.timer = data.duration;
+                // UI 也会复用同一个条子，看起来就是倒计时瞬间回满
+                if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
+                {
+                    GameStatusUI.Instance.ShowStatus(data.uiMessage, data.duration, data.uiColor);
+                }
+            }
+            return; // 只要激活了，就不再处理积累值
         }
-        // 👇 之前报错就是因为没改成 baseThreshold
-        return data.baseThreshold + bonus;
+
+        // 2. 如果还没激活，处理积累条
+        if (!buildupTrackers.ContainsKey(data)) buildupTrackers[data] = new BuildupTracker();
+        BuildupTracker tracker = buildupTrackers[data];
+
+        float maxThreshold = GetRealThreshold(data);
+
+        tracker.currentValue += amount;
+        tracker.decayPauseTimer = 2.0f;
+
+        // 更新 UI：条子上涨
+        if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
+        {
+            GameStatusUI.Instance.UpdateBuildupUI(data.uiMessage, tracker.currentValue, maxThreshold, data.uiColor);
+        }
+
+        // 3. 判定爆发
+        if (tracker.currentValue >= maxThreshold)
+        {
+            ActivateBuff(data);        // 激活！UI 会无缝切换成倒计时
+            tracker.currentValue = 0f; // 清空后台数据
+
+            // 🔥🔥🔥 核心修改：删掉了这里让 UI 消失的代码 🔥🔥🔥
+            // 我们不删除 UI，而是让 ActivateBuff -> ShowStatus 去接管它
+        }
     }
 
-    // 外部调用：增加抗性
-    public void AddResistance(StatusType type, float amount)
+    private void ActivateBuff(BuffData newData)
     {
-        if (!resistanceBonuses.ContainsKey(type)) resistanceBonuses[type] = 0;
-        resistanceBonuses[type] += amount;
+        currentBuffs.Add(new ActiveBuff(newData));
+
+        if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
+        {
+            // 这里会找到刚刚那个积累条，把它重置为满状态，并开始倒计时
+            GameStatusUI.Instance.ShowStatus(newData.uiMessage, newData.duration, newData.uiColor);
+        }
     }
 
     private void HandleActiveBuffs()
@@ -64,7 +105,7 @@ public class StatusManager : MonoBehaviour
         {
             ActiveBuff buff = currentBuffs[i];
             buff.timer -= Time.deltaTime;
-            if (buff.timer <= 0) { currentBuffs.RemoveAt(i); continue; }
+
             if (buff.data.damagePerTick > 0)
             {
                 buff.tickTimer += Time.deltaTime;
@@ -74,6 +115,8 @@ public class StatusManager : MonoBehaviour
                     if (targetHealth != null) targetHealth.TakeDamage(buff.data.damagePerTick, false);
                 }
             }
+
+            if (buff.timer <= 0) currentBuffs.RemoveAt(i);
         }
     }
 
@@ -82,9 +125,11 @@ public class StatusManager : MonoBehaviour
         List<BuffData> keys = new List<BuffData>(buildupTrackers.Keys);
         foreach (var key in keys)
         {
-            BuildupTracker tracker = buildupTrackers[key];
+            // 🔥🔥🔥 核心修改：如果这个 Buff 已经激活了，就不要再管积累条了 🔥🔥🔥
+            // 这样防止后台的衰减逻辑去干扰前台正在倒计时的 UI
+            if (currentBuffs.Exists(x => x.data == key)) continue;
 
-            // 🔥 修复：动态获取当前阈值
+            BuildupTracker tracker = buildupTrackers[key];
             float maxThreshold = GetRealThreshold(key);
 
             if (tracker.decayPauseTimer > 0)
@@ -97,59 +142,36 @@ public class StatusManager : MonoBehaviour
                 if (tracker.currentValue < 0) tracker.currentValue = 0;
             }
 
-            if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
+            // 只有积累值 > 0 才更新 UI
+            if (tracker.currentValue > 0)
             {
-                // 🔥 修复：传入计算好的 maxThreshold
-                GameStatusUI.Instance.UpdateBuildupUI(key.uiMessage, tracker.currentValue, maxThreshold, key.uiColor);
+                if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
+                {
+                    GameStatusUI.Instance.UpdateBuildupUI(key.uiMessage, tracker.currentValue, maxThreshold, key.uiColor);
+                }
+            }
+            else
+            {
+                // 如果衰减归零了，且没激活，说明玩家躲过一劫，移除 UI
+                if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
+                {
+                    GameStatusUI.Instance.UpdateBuildupUI(key.uiMessage, 0, maxThreshold, key.uiColor);
+                }
             }
         }
     }
 
-    public void AddStatusBuildup(BuffData data, float amount)
+    public float GetRealThreshold(BuffData data)
     {
-        if (data == null) return;
-        if (!buildupTrackers.ContainsKey(data)) buildupTrackers[data] = new BuildupTracker();
-
-        BuildupTracker tracker = buildupTrackers[data];
-
-        // 🔥 修复：动态获取阈值
-        float maxThreshold = GetRealThreshold(data);
-
-        tracker.currentValue += amount;
-        tracker.decayPauseTimer = 2.0f;
-
-        if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-        {
-            GameStatusUI.Instance.UpdateBuildupUI(data.uiMessage, tracker.currentValue, maxThreshold, data.uiColor);
-        }
-
-        // 🔥 修复：这里也用 maxThreshold 判定
-        if (tracker.currentValue >= maxThreshold)
-        {
-            ActivateBuff(data);
-            tracker.currentValue = 0f;
-
-            if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-            {
-                GameStatusUI.Instance.UpdateBuildupUI(data.uiMessage, 0, maxThreshold, data.uiColor);
-            }
-        }
+        float bonus = 0f;
+        if (resistanceBonuses.ContainsKey(data.type)) bonus = resistanceBonuses[data.type];
+        return data.baseThreshold + bonus;
     }
 
-    private void ActivateBuff(BuffData newData)
+    public void AddResistance(StatusType type, float amount)
     {
-        if (!newData.isStackable)
-        {
-            var existingBuff = currentBuffs.Find(x => x.data == newData);
-            if (existingBuff != null) existingBuff.timer = newData.duration;
-            else currentBuffs.Add(new ActiveBuff(newData));
-        }
-        else currentBuffs.Add(new ActiveBuff(newData));
-
-        if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
-        {
-            GameStatusUI.Instance.ShowStatus(newData.uiMessage, newData.duration, newData.uiColor, newData.isStackable);
-        }
+        if (!resistanceBonuses.ContainsKey(type)) resistanceBonuses[type] = 0;
+        resistanceBonuses[type] += amount;
     }
 
     public void ClearDebuffsOnRest()
@@ -173,7 +195,7 @@ public class StatusManager : MonoBehaviour
         foreach (var buff in currentBuffs)
         {
             if (GameStatusUI.Instance != null)
-                GameStatusUI.Instance.ShowStatus(buff.data.uiMessage, buff.timer, buff.data.uiColor, buff.data.isStackable);
+                GameStatusUI.Instance.ShowStatus(buff.data.uiMessage, buff.timer, buff.data.uiColor);
         }
     }
 }
