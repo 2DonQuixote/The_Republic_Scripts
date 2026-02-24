@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using DG.Tweening; // 记得引用这个，我们要用 DOShake 或者 DOScale
 
 public class GameStatusUI : MonoBehaviour
 {
@@ -8,27 +9,22 @@ public class GameStatusUI : MonoBehaviour
 
     private void Awake() => Instance = this;
 
-    // 🔥 修改：增加了 isStackable 参数
+    // 1. 显示已激活 Buff (倒计时模式)
     public void ShowStatus(string content, float duration, Color barColor, bool isStackable)
     {
-        // === 情况 A: 不可叠加 (中毒模式) ===
         if (!isStackable)
         {
-            // 遍历当前所有的条子，看看有没有名字一样的
             foreach (Transform child in container)
             {
                 var controller = child.GetComponent<StatusItemController>();
                 if (controller != null && controller.GetTitle() == content)
                 {
-                    // 找到了！重置它的时间，然后直接返回，不生成新的
                     controller.ResetTimer(duration);
                     return;
                 }
             }
         }
 
-        // === 情况 B: 可叠加 (流血模式) 或 没找到旧的 ===
-        // 正常生成新条子
         GameObject newItem = Instantiate(statusItemPrefab, container);
         var ctrl = newItem.GetComponent<StatusItemController>();
         if (ctrl != null)
@@ -37,13 +33,51 @@ public class GameStatusUI : MonoBehaviour
         }
     }
 
-    // 强制清空所有 UI (用于篝火净化)
-    public void HideUI()
+    // 2. 显示积累条 (百分比模式)
+    public void UpdateBuildupUI(string buffName, float current, float max, Color color)
     {
-        // 遍历容器下的所有子物体，把它们全删了
+        string uiTitle = $"[积累] {buffName}";
+
+        StatusItemController targetCtrl = null;
+
+        // 寻找现有的条子
         foreach (Transform child in container)
         {
-            Destroy(child.gameObject);
+            var controller = child.GetComponent<StatusItemController>();
+            if (controller != null && controller.GetTitle() == uiTitle)
+            {
+                targetCtrl = controller;
+                break;
+            }
+        }
+
+        // 逻辑 A：积累值归零，且条子存在 -> 删掉
+        if (current <= 0)
+        {
+            if (targetCtrl != null) targetCtrl.RemoveSelf();
+            return;
+        }
+
+        // 逻辑 B：积累值 > 0，但没有条子 -> 新建一个
+        if (targetCtrl == null)
+        {
+            GameObject newItem = Instantiate(statusItemPrefab, container);
+            targetCtrl = newItem.GetComponent<StatusItemController>();
+
+            // 🔥 简单的进场动画 (这里就是之前报错的地方，现在修好了)
+            newItem.transform.localScale = Vector3.zero;
+            newItem.transform.DOScale(1f, 0.2f).SetEase(Ease.OutBack);
+        }
+
+        // 逻辑 C：刷新数值
+        if (targetCtrl != null)
+        {
+            targetCtrl.UpdateBuildup(uiTitle, current, max, color);
         }
     }
-} // <--- class 结束的大括号
+
+    public void HideUI()
+    {
+        foreach (Transform child in container) Destroy(child.gameObject);
+    }
+}

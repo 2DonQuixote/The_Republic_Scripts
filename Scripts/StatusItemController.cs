@@ -7,9 +7,9 @@ public class StatusItemController : MonoBehaviour
     public Image durationBar;
     public Text statusText;
 
-    // 一个私有变量，用来记录当前的动画，方便打断它
     private Tween _barTween;
 
+    // --- 倒计时模式 ---
     public void Setup(string content, float duration, Color barColor)
     {
         if (statusText != null) statusText.text = content;
@@ -19,29 +19,45 @@ public class StatusItemController : MonoBehaviour
             durationBar.fillAmount = 1f;
         }
 
-        // 进场动画
         transform.localScale = Vector3.zero;
         transform.DOScale(1f, 0.3f).SetEase(Ease.OutBack);
 
-        // 开始倒计时
         StartCountdown(duration);
     }
 
-    // 🔥 新增：重置倒计时
     public void ResetTimer(float newDuration)
     {
-        // 1. 杀掉旧动画 (防止它继续往下跑)
         _barTween?.Kill();
-
-        // 2. 视觉反馈：稍微弹一下，提示玩家时间刷新了
         transform.DOPunchScale(Vector3.one * 0.1f, 0.2f, 10, 1);
 
-        // 3. 重新开始
         if (durationBar != null) durationBar.fillAmount = 1f;
         StartCountdown(newDuration);
     }
 
-    // 提取出来的倒计时逻辑
+    // 🔥🔥🔥 (核心新增) 积累条模式 🔥🔥🔥
+    public void UpdateBuildup(string content, float current, float max, Color barColor)
+    {
+        // 杀掉旧动画，改为手动控制进度
+        _barTween?.Kill();
+
+        if (statusText != null) statusText.text = content;
+
+        if (durationBar != null)
+        {
+            // 半透明显示，表示还没生效
+            Color ghostColor = barColor;
+            ghostColor.a = 0.7f;
+            durationBar.color = ghostColor;
+
+            // 计算百分比
+            float pct = Mathf.Clamp01(current / max);
+            durationBar.fillAmount = pct;
+        }
+
+        // 确保它是显示的
+        transform.localScale = Vector3.one;
+    }
+
     private void StartCountdown(float duration)
     {
         if (durationBar != null)
@@ -52,12 +68,14 @@ public class StatusItemController : MonoBehaviour
         }
     }
 
-    private void RemoveSelf()
+    public void RemoveSelf()
     {
-        transform.DOScale(0f, 0.2f).OnComplete(() => Destroy(gameObject));
+        if (this == null) return;
+        transform.DOScale(0f, 0.2f).OnComplete(() => {
+            if (gameObject != null) Destroy(gameObject);
+        });
     }
 
-    // 辅助方法：告诉外面我显示的是什么字（用来判断是否重复）
     public string GetTitle()
     {
         return statusText != null ? statusText.text : "";

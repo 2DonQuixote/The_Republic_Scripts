@@ -37,15 +37,15 @@ public abstract class BaseEnemy : MonoBehaviour
     public float patrolWaitTime = 2.5f;
 
     [Header("=== 受击反馈设置 ===")]
-    public float knockbackDistance = 1.5f;
-    public float knockbackDuration = 0.15f;
+    public float knockbackDistance = 0.3f;
+    public float knockbackDuration = 0.3f;
 
     // 🔥🔥🔥 新增：死亡击飞配置 🔥🔥🔥
     [Header("=== 💀 死亡表现 (Death Knockback) ===")]
     [Tooltip("死亡瞬间被击飞的距离。设为0则原地软倒")]
-    public float deathKnockbackDistance = 3.0f;
+    public float deathKnockbackDistance = 0.0f;
     [Tooltip("在地上滑行退后的时间 (建议匹配死亡动画的前半段落地时间)")]
-    public float deathKnockbackDuration = 0.4f;
+    public float deathKnockbackDuration = 0.0f;
 
     [Header("=== 状态监控 (仅供查看) ===")]
     public AIState currentState = AIState.Idle;

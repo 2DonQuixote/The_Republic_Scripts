@@ -1,36 +1,41 @@
 ﻿using UnityEngine;
 
-// 这一行让你可以在 Project 窗口右键创建
+// 1. 定义枚举：你的游戏里有哪些异常？
+public enum StatusType
+{
+    Poison, // 毒
+    Bleed,  // 出血
+    Curse,  // 诅咒
+    Fire    // 灼烧
+}
+
 [CreateAssetMenu(fileName = "NewBuff", menuName = "Game/Buff Data")]
 public class BuffData : ScriptableObject
 {
+    [Header("=== 🆔 类型定义 ===")]
+    public StatusType type; // 👈 记得在 Inspector 里选一下！
+
+    [Header("=== 🧪 积累机制 ===")]
+    [Tooltip("基础阈值：这是及格线。最终阈值 = 基础 + 玩家抗性")]
+    public float baseThreshold = 100f; // 💡 变量名改了，更明确
+
+    [Tooltip("衰减速率：每秒自动减少多少积累值")]
+    public float decayRate = 5f;
+
+    [Space]
     [Header("=== ☠️ 伤害逻辑配置 ===")]
-    [Tooltip("持续多少秒")]
     public float duration = 5f;
-
-    [Tooltip("每次扣多少血")]
     public int damagePerTick = 10;
-
-    [Tooltip("几秒扣一次")]
     public float tickInterval = 1f;
-
-    [Tooltip("勾选后，接触瞬间会立刻造成一次伤害，不用等第一秒")]
     public bool triggerImmediately = false;
 
-    // 🔥 新增：堆叠开关
     [Header("=== 机制配置 ===")]
-    [Tooltip("勾选 = 像流血一样，每次受伤都加一个新条子（叠加）。\n不勾 = 像中毒一样，只保留一个，再次受伤重置时间（刷新）。")]
-    public bool isStackable = true; // 默认为 true (流血模式)
+    public bool isStackable = false;
 
     [Header("=== 🎨 UI 表现配置 ===")]
-    [Tooltip("屏幕上弹出的文字，如 '剧毒攻心！'")]
     public string uiMessage = "中毒了！！！";
-
-    [Tooltip("进度条的颜色")]
     public Color uiColor = Color.green;
 
-    // 🔥🔥【新增】清除规则配置 🔥🔥
     [Header("=== 清除规则 ===")]
-    [Tooltip("勾选 = 死亡或坐篝火时自动清除。\n不勾 = 永久保留（直到时间结束或手动清除）。")]
     public bool clearOnRest = true;
 }
