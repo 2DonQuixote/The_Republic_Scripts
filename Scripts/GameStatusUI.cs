@@ -1,92 +1,124 @@
 ﻿using UnityEngine;
-using DG.Tweening;
+using System.Collections.Generic;
 
 public class GameStatusUI : MonoBehaviour
 {
-    public static GameStatusUI Instance;
+    [Header("配置")]
     public GameObject statusItemPrefab;
-    public Transform container;
+    public Transform container; // 挂载 VerticalLayoutGroup 的那个物体
 
-    private void Awake() => Instance = this;
+    // 缓存字典：通过 BuffData 快速找到对应的 UI 条目，不用循环找了！
+    private Dictionary<BuffData, StatusItemController> activeItems = new Dictionary<BuffData, StatusItemController>();
 
-    // 1. 显示/刷新 Active Buff (倒计时模式)
-    public void ShowStatus(string content, float duration, Color barColor)
+    private StatusManager targetPlayerStatus;
+
+    private void Start()
     {
-        // 先找找有没有同名的条子（无论是正在积累的，还是已经激活的）
-        foreach (Transform child in container)
+        // 1. 寻找玩家身上的 StatusManager
+        GameObject player = GameObject.FindGameObjectWithTag("Player");
+        if (player != null)
         {
-            var controller = child.GetComponent<StatusItemController>();
-            if (controller != null && controller.GetTitle() == content)
+            targetPlayerStatus = player.GetComponent<StatusManager>();
+
+            if (targetPlayerStatus != null)
             {
-                // 找到了！直接复用它，从积累模式切换为倒计时模式
-                controller.ResetTimer(duration);
-                // 💡 这里顺便可以重置一下颜色，确保颜色正确
-                if (controller.durationBar != null) controller.durationBar.color = barColor;
-                return;
+                // 2. 订阅所有事件
+                targetPlayerStatus.OnBuildupUpdated += HandleBuildup;
+                targetPlayerStatus.OnBuffActivated += HandleActive;
+                targetPlayerStatus.OnBuffEnded += HandleEnd;
+                targetPlayerStatus.OnAllBuffsCleared += HandleClearAll;
             }
         }
-
-        // 没找到（可能是直接获得Buff），新建一个
-        GameObject newItem = Instantiate(statusItemPrefab, container);
-        var ctrl = newItem.GetComponent<StatusItemController>();
-        if (ctrl != null)
+        else
         {
-            ctrl.Setup(content, duration, barColor);
+            Debug.LogError("GameStatusUI: 找不到 Player！");
         }
     }
 
-    // 2. 更新积累进度 (百分比模式)
-    public void UpdateBuildupUI(string buffName, float current, float max, Color color)
+    private void OnDestroy()
     {
-        // 🔥 核心修改：去掉 "[积累]" 前缀！让它和 ShowStatus 用同一个名字
-        string uiTitle = buffName;
-
-        StatusItemController targetCtrl = null;
-
-        // 寻找现有条子
-        foreach (Transform child in container)
+        // 记得取消订阅，好习惯
+        if (targetPlayerStatus != null)
         {
-            var controller = child.GetComponent<StatusItemController>();
-            if (controller != null && controller.GetTitle() == uiTitle)
-            {
-                targetCtrl = controller;
-                break;
-            }
+            targetPlayerStatus.OnBuildupUpdated -= HandleBuildup;
+            targetPlayerStatus.OnBuffActivated -= HandleActive;
+            targetPlayerStatus.OnBuffEnded -= HandleEnd;
+            targetPlayerStatus.OnAllBuffsCleared -= HandleClearAll;
         }
+    }
 
-        // 归零逻辑：只有当确实有一个“纯积累”条时才删除
-        // 如果这个条子已经变成了 Active Buff（在倒计时），我们就不应该在这里删它
+    // --- 事件处理逻辑 ---
+
+    // 1. 处理积累值变化
+    private void HandleBuildup(BuffData data, float current, float max)
+    {
+        // 如果归零了，说明没爆出来就衰减完了 -> 移除 UI
         if (current <= 0)
         {
-            // 这里我们不做删除操作，交给 StatusManager 的逻辑去控制
-            // 或者仅仅当它处于“非激活”状态时才删 (这个判断比较复杂，留给 Manager 控制更稳)
-            if (targetCtrl != null)
-            {
-                // 只有当条子是满的或者空的，且没有在倒计时（很难判断），才移除
-                // 简单处理：StatusManager 会在激活时接管，在衰减归零时调用这个。
-                // 如果衰减归零了，说明没激活，直接删。
-                targetCtrl.RemoveSelf();
-            }
+            RemoveItem(data);
             return;
         }
 
-        // 新建条子
-        if (targetCtrl == null)
-        {
-            GameObject newItem = Instantiate(statusItemPrefab, container);
-            targetCtrl = newItem.GetComponent<StatusItemController>();
-
-        }
-
-        // 刷新数值
-        if (targetCtrl != null)
-        {
-            targetCtrl.UpdateBuildup(uiTitle, current, max, color);
-        }
+        StatusItemController item = GetOrCreateItem(data);
+        // 通知 UI 更新积累条
+        item.UpdateBuildup(data.uiMessage, current, max, data.uiColor);
     }
 
-    public void HideUI()
+    // 2. 处理 Buff 激活 (转倒计时)
+    private void HandleActive(BuffData data)
     {
-        foreach (Transform child in container) Destroy(child.gameObject);
+        StatusItemController item = GetOrCreateItem(data);
+        // 通知 UI 切换为倒计时模式
+        item.Setup(data.uiMessage, data.duration, data.uiColor);
+    }
+
+    // 3. 处理 Buff 结束
+    private void HandleEnd(BuffData data)
+    {
+        RemoveItem(data);
+    }
+
+    // 4. 处理全清 (坐火)
+    private void HandleClearAll()
+    {
+        foreach (var kvp in activeItems)
+        {
+            if (kvp.Value != null) Destroy(kvp.Value.gameObject);
+        }
+        activeItems.Clear();
+    }
+
+    // --- 内部辅助方法 ---
+
+    private StatusItemController GetOrCreateItem(BuffData data)
+    {
+        // 如果字典里已经有了，直接返回
+        if (activeItems.ContainsKey(data))
+        {
+            if (activeItems[data] != null) return activeItems[data];
+            else activeItems.Remove(data); // 如果物体被意外删了，从字典移除
+        }
+
+        // 没有则创建
+        GameObject newObj = Instantiate(statusItemPrefab, container);
+        StatusItemController ctrl = newObj.GetComponent<StatusItemController>();
+
+        // 加入字典
+        activeItems.Add(data, ctrl);
+        return ctrl;
+    }
+
+    private void RemoveItem(BuffData data)
+    {
+        if (activeItems.ContainsKey(data))
+        {
+            StatusItemController ctrl = activeItems[data];
+            if (ctrl != null)
+            {
+                // 调用它自己的退场动画，它会在动画结束时 Destroy 自己
+                ctrl.RemoveSelf();
+            }
+            activeItems.Remove(data);
+        }
     }
 }

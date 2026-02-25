@@ -1,9 +1,16 @@
 ﻿using UnityEngine;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 
 public class StatusManager : MonoBehaviour
 {
+    // 🔥 定义事件：逻辑层只发出信号，不关心谁在听
+    public event Action<BuffData, float, float> OnBuildupUpdated; // (数据, 当前值, 阈值)
+    public event Action<BuffData> OnBuffActivated;                // (数据) -> 转为倒计时
+    public event Action<BuffData> OnBuffEnded;                    // (数据) -> 移除图标
+    public event Action OnAllBuffsCleared;                        // -> 坐火时清空所有
+
     [System.Serializable]
     public class ActiveBuff
     {
@@ -45,24 +52,20 @@ public class StatusManager : MonoBehaviour
     {
         if (data == null) return;
 
-        // 1. 如果 Buff 已经激活
+        // 1. 如果 Buff 已经激活 (Active)
         var activeBuff = currentBuffs.Find(x => x.data == data);
         if (activeBuff != null)
         {
-            // 如果允许刷新时间
             if (data.refreshTimeOnHit)
             {
                 activeBuff.timer = data.duration;
-                // UI 也会复用同一个条子，看起来就是倒计时瞬间回满
-                if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
-                {
-                    GameStatusUI.Instance.ShowStatus(data.uiMessage, data.duration, data.uiColor);
-                }
+                // 🔥 广播：Buff 刷新了 (UI 应该重置倒计时)
+                OnBuffActivated?.Invoke(data);
             }
-            return; // 只要激活了，就不再处理积累值
+            return;
         }
 
-        // 2. 如果还没激活，处理积累条
+        // 2. 如果还没激活，处理积累条 (Buildup)
         if (!buildupTrackers.ContainsKey(data)) buildupTrackers[data] = new BuildupTracker();
         BuildupTracker tracker = buildupTrackers[data];
 
@@ -71,20 +74,16 @@ public class StatusManager : MonoBehaviour
         tracker.currentValue += amount;
         tracker.decayPauseTimer = 2.0f;
 
-        // 更新 UI：条子上涨
-        if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-        {
-            GameStatusUI.Instance.UpdateBuildupUI(data.uiMessage, tracker.currentValue, maxThreshold, data.uiColor);
-        }
+        // 🔥 广播：积累值变了 (UI 去更新进度条)
+        OnBuildupUpdated?.Invoke(data, tracker.currentValue, maxThreshold);
 
         // 3. 判定爆发
         if (tracker.currentValue >= maxThreshold)
         {
-            ActivateBuff(data);        // 激活！UI 会无缝切换成倒计时
-            tracker.currentValue = 0f; // 清空后台数据
-
-            // 🔥🔥🔥 核心修改：删掉了这里让 UI 消失的代码 🔥🔥🔥
-            // 我们不删除 UI，而是让 ActivateBuff -> ShowStatus 去接管它
+            ActivateBuff(data);
+            tracker.currentValue = 0f;
+            // 爆发时不需要专门发 Buildup=0 的通知，
+            // 因为 ActivateBuff 会紧接着发出 Activated 通知，UI 会自动切换模式
         }
     }
 
@@ -92,11 +91,8 @@ public class StatusManager : MonoBehaviour
     {
         currentBuffs.Add(new ActiveBuff(newData));
 
-        if (GameStatusUI.Instance != null && gameObject.CompareTag("Player"))
-        {
-            // 这里会找到刚刚那个积累条，把它重置为满状态，并开始倒计时
-            GameStatusUI.Instance.ShowStatus(newData.uiMessage, newData.duration, newData.uiColor);
-        }
+        // 🔥 广播：状态激活！(UI 应该切换为倒计时模式)
+        OnBuffActivated?.Invoke(newData);
     }
 
     private void HandleActiveBuffs()
@@ -104,6 +100,14 @@ public class StatusManager : MonoBehaviour
         for (int i = currentBuffs.Count - 1; i >= 0; i--)
         {
             ActiveBuff buff = currentBuffs[i];
+
+            // 🛡️ 保险：防止空数据报错
+            if (buff == null || buff.data == null)
+            {
+                currentBuffs.RemoveAt(i);
+                continue;
+            }
+
             buff.timer -= Time.deltaTime;
 
             if (buff.data.damagePerTick > 0)
@@ -116,7 +120,13 @@ public class StatusManager : MonoBehaviour
                 }
             }
 
-            if (buff.timer <= 0) currentBuffs.RemoveAt(i);
+            // 时间到，移除状态
+            if (buff.timer <= 0)
+            {
+                // 🔥 广播：Buff 结束
+                OnBuffEnded?.Invoke(buff.data);
+                currentBuffs.RemoveAt(i);
+            }
         }
     }
 
@@ -125,12 +135,12 @@ public class StatusManager : MonoBehaviour
         List<BuffData> keys = new List<BuffData>(buildupTrackers.Keys);
         foreach (var key in keys)
         {
-            // 🔥🔥🔥 核心修改：如果这个 Buff 已经激活了，就不要再管积累条了 🔥🔥🔥
-            // 这样防止后台的衰减逻辑去干扰前台正在倒计时的 UI
+            // 如果已经激活了，就不处理积累衰减
             if (currentBuffs.Exists(x => x.data == key)) continue;
 
             BuildupTracker tracker = buildupTrackers[key];
             float maxThreshold = GetRealThreshold(key);
+            bool hasChanged = false;
 
             if (tracker.decayPauseTimer > 0)
             {
@@ -140,23 +150,14 @@ public class StatusManager : MonoBehaviour
             {
                 tracker.currentValue -= key.decayRate * Time.deltaTime;
                 if (tracker.currentValue < 0) tracker.currentValue = 0;
+                hasChanged = true;
             }
 
-            // 只有积累值 > 0 才更新 UI
-            if (tracker.currentValue > 0)
+            // 只有数值变化了才广播，节省性能
+            if (hasChanged)
             {
-                if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-                {
-                    GameStatusUI.Instance.UpdateBuildupUI(key.uiMessage, tracker.currentValue, maxThreshold, key.uiColor);
-                }
-            }
-            else
-            {
-                // 如果衰减归零了，且没激活，说明玩家躲过一劫，移除 UI
-                if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-                {
-                    GameStatusUI.Instance.UpdateBuildupUI(key.uiMessage, 0, maxThreshold, key.uiColor);
-                }
+                // 🔥 广播：积累值衰减
+                OnBuildupUpdated?.Invoke(key, tracker.currentValue, maxThreshold);
             }
         }
     }
@@ -178,24 +179,14 @@ public class StatusManager : MonoBehaviour
     {
         for (int i = currentBuffs.Count - 1; i >= 0; i--)
         {
-            if (currentBuffs[i].data.clearOnRest) currentBuffs.RemoveAt(i);
+            if (currentBuffs[i] != null && currentBuffs[i].data != null && currentBuffs[i].data.clearOnRest)
+            {
+                currentBuffs.RemoveAt(i);
+            }
         }
         buildupTrackers.Clear();
 
-        if (gameObject.CompareTag("Player") && GameStatusUI.Instance != null)
-        {
-            GameStatusUI.Instance.HideUI();
-            StartCoroutine(RebuildUI());
-        }
-    }
-
-    IEnumerator RebuildUI()
-    {
-        yield return null;
-        foreach (var buff in currentBuffs)
-        {
-            if (GameStatusUI.Instance != null)
-                GameStatusUI.Instance.ShowStatus(buff.data.uiMessage, buff.timer, buff.data.uiColor);
-        }
+        // 🔥 广播：清空所有 (UI 应该删除所有图标)
+        OnAllBuffsCleared?.Invoke();
     }
 }
