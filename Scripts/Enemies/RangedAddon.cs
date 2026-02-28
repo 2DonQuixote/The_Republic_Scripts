@@ -19,6 +19,7 @@ public class RangedAddon : MonoBehaviour
     public float throwEndDelay = 1.0f;      // 扔完发呆的硬直，防平移
 
     private float _timer = 0f;
+    private bool _isThrowing = false;       // 🔥 新增：标记是否正在执行投掷动作
 
     // 依赖的身体组件
     private BaseEnemy _baseAI;
@@ -47,40 +48,55 @@ public class RangedAddon : MonoBehaviour
         if (_timer > 0) _timer -= Time.deltaTime;
 
         // 🔥 核心冲突避免：
-        // 如果老父亲已经被劫持，或者老父亲正在施展近战动作 (Attack 状态)，
-        // 外挂绝不插手，乖乖闭嘴！
-        if (_baseAI.isAIHijacked || _baseAI.currentState == BaseEnemy.AIState.Attack) return;
+        // 如果老父亲正在施展近战动作 (Attack 状态)，或者我们自己正在播投掷动画，绝不插手！
+        if ((_baseAI.currentState == BaseEnemy.AIState.Attack && !_baseAI.isAIHijacked) || _isThrowing) return;
 
         // 测距
         float dist = Vector3.Distance(transform.position, _player.position);
 
-        // 如果在“甜点距离”内，且冷却完毕，开始劫持大脑！
-        if (dist >= minRange && dist <= maxRange && _timer <= 0)
+        // 🔥 判断是否在“远程甜点距离”内
+        if (dist >= minRange && dist <= maxRange)
         {
-            ExecuteThrow();
+            // 1. 🔒 持续劫持大脑！只要在这个圈里，老父亲就别想接管身体
+            _baseAI.isAIHijacked = true;
+
+            // 2. 踩死物理刹车（原地站桩）
+            if (_agent != null && _agent.isActiveAndEnabled)
+            {
+                _agent.velocity = Vector3.zero;
+                _agent.isStopped = true;
+            }
+
+            // 3. 转身一直盯着玩家看
+            FaceTarget(_player.position);
+
+            // 4. 如果冷却完毕，丢毒球！
+            if (_timer <= 0)
+            {
+                ExecuteThrow();
+            }
+        }
+        else
+        {
+            // 🔥 如果玩家跑出了远程范围（太近了，或者逃得太远了）
+            // 如果此时大脑还在被我们劫持，赶紧把控制权还给老父亲！
+            if (_baseAI.isAIHijacked)
+            {
+                _baseAI.isAIHijacked = false; // 🔓 解除劫持！
+                if (_agent != null && _agent.isActiveAndEnabled) _agent.isStopped = false;
+            }
         }
     }
 
     private void ExecuteThrow()
     {
-        // 1. 🔒 劫持大脑！BaseEnemy 现在变成植物人了，停留在原地
-        _baseAI.isAIHijacked = true;
+        _isThrowing = true; // 标记开始投掷
         _timer = cooldown;
 
-        // 2. 踩死物理刹车
-        if (_agent != null && _agent.isActiveAndEnabled)
-        {
-            _agent.velocity = Vector3.zero;
-            _agent.isStopped = true;
-        }
-
-        // 3. 转身看玩家
-        FaceTarget(_player.position);
-
-        // 4. 播放丢毒动画
+        // 播放丢毒动画
         if (_anim != null) _anim.SetTrigger("Throw");
 
-        // 5. 开启硬直等待协程
+        // 开启硬直等待协程
         StartCoroutine(ThrowWaitCoroutine());
     }
 
@@ -89,11 +105,11 @@ public class RangedAddon : MonoBehaviour
         // 等待动画后摇结束
         yield return new WaitForSeconds(throwEndDelay);
 
-        // 如果怪物在此期间没被打死，就把控制权还给老父亲
-        if (_baseAI.currentState != BaseEnemy.AIState.Dead)
-        {
-            _baseAI.isAIHijacked = false; // 🔓 解除劫持！老父亲重新接管移动和近战
-        }
+        // 投掷动作彻底结束
+        _isThrowing = false;
+
+        // 💡 注意：这里不再像以前那样无脑解除劫持了！
+        // 而是交给 Update 去判断玩家是否还在远程圈子里。
     }
 
     // ==========================================
@@ -105,11 +121,11 @@ public class RangedAddon : MonoBehaviour
 
         GameObject ball = Instantiate(projectilePrefab, throwPoint.position, throwPoint.rotation);
         var script = ball.GetComponent<PoisonProjectile>();
+
         if (script != null)
         {
-            Vector3 targetPos = _player.position + Vector3.up * 1.0f; // 瞄准胸口
-            Vector3 dir = (targetPos - throwPoint.position).normalized;
-            script.Launch(dir);
+            // 🔥 直接把玩家当前踩着的地面坐标，作为落点传给毒球
+            script.LaunchToPoint(_player.position);
         }
     }
 
