@@ -13,7 +13,9 @@ public abstract class BaseEnemy : MonoBehaviour
         Idle,       // 发呆 / 巡逻
         Chase,      // 追逐玩家
         Attack,     // 正在攻击
-        Dead        // 死亡
+        Dead,       // 死亡
+        Retreat,    // 🔥 战术动作：打完后撤
+        Strafe      // 🔥 战术动作：左右试探游走
     }
 
     [Header("=== 基础 AI 属性 ===")]
@@ -23,55 +25,59 @@ public abstract class BaseEnemy : MonoBehaviour
     public float stopDistance = 1.2f;
     [Tooltip("追击玩家时的奔跑速度")]
     public float moveSpeed = 4.5f;
-    public float attackCooldown = 2.0f;
+    // 🔥 已删除 attackCooldown，怪物的攻击间隔现在完全由战术走位的时间决定！
 
-    // 🔥🔥🔥 新增：巡逻专属配置 🔥🔥🔥
     [Header("=== 🚶 巡逻 (Patrol) 配置 ===")]
-    [Tooltip("勾选则会在 Idle 状态下四处溜达，不勾则原地站岗")]
     public bool enablePatrol = true;
-    [Tooltip("巡逻时的慢走速度 (需要与你的 Walk 动画匹配)")]
     public float patrolSpeed = 1.5f;
-    [Tooltip("围绕出生点巡逻的最大活动半径")]
     public float patrolRadius = 6.0f;
-    [Tooltip("走到目标点后，停下来发呆思考人生的时间")]
     public float patrolWaitTime = 2.5f;
 
-    [Header("=== 受击反馈设置 ===")]
+    // 🔥🔥🔥 新增：战术走位配置 🔥🔥🔥
+    [Header("=== 🧠 战术走位 (替代攻击冷却) ===")]
+    [Tooltip("是否在近战攻击结束后拉开距离并游走观察？(如果不勾选，怪物将变成没有冷却的疯狗)")]
+    public bool enableTacticalMovement = true;
+    [Tooltip("后撤时的速度 (建议调快，像后跳)")]
+    public float retreatSpeed = 6.0f;
+    [Tooltip("后撤的安全距离")]
+    public float retreatDistance = 3.5f;
+    [Tooltip("左右游走时的速度 (建议调慢，充满压迫感)")]
+    public float strafeSpeed = 1.5f;
+    [Tooltip("🔥 游走观察的最大时间 (这个值现在就是怪物的攻击冷却时间！)")]
+    public float maxStrafeTime = 2.0f;
+
+    [Header("=== 受击与死亡配置 ===")]
     public float knockbackDistance = 0.3f;
     public float knockbackDuration = 0.3f;
-
-    // 🔥🔥🔥 新增：死亡击飞配置 🔥🔥🔥
-    [Header("=== 💀 死亡表现 (Death Knockback) ===")]
-    [Tooltip("死亡瞬间被击飞的距离。设为0则原地软倒")]
     public float deathKnockbackDistance = 0.0f;
-    [Tooltip("在地上滑行退后的时间 (建议匹配死亡动画的前半段落地时间)")]
     public float deathKnockbackDuration = 0.0f;
 
     [Header("=== 状态监控 (仅供查看) ===")]
     public AIState currentState = AIState.Idle;
 
-    // --- 内部核心组件引用 ---
+    // --- 内部组件 ---
     protected Transform player;
     protected NavMeshAgent agent;
     protected Animator anim;
 
-    // --- 内部计时器与控制锁 ---
-    protected float lastAttackTime = -100f;
+    // --- 内部标记 ---
     protected bool isAttacking = false;
     protected bool isDead = false;
     public bool isAIHijacked = false;
-
-    // 🔥 新增：转向锁。出招后锁死，禁止原地转盘！
     protected bool isRotationLocked = false;
 
-    // 🔥 巡逻内部状态
-    protected Vector3 startPosition; // 领地中心（出生点）
+    // 用来控制“这次攻击结束后，是否跳过战术走位”(供远程子类调用)
+    protected bool skipTacticalThisTime = false;
+
+    // --- 巡逻与战术变量 ---
+    protected Vector3 startPosition;
     protected float patrolTimer = 0f;
     protected bool isWaiting = false;
 
-    // ==========================================
-    // 1. 初始化阶段
-    // ==========================================
+    protected float strafeTimer = 0f;
+    protected int strafeDirection = 1; // 1 右， -1 左
+    protected Vector3 tacticalTargetPos;
+
     protected virtual void Start()
     {
         agent = GetComponent<NavMeshAgent>();
@@ -80,7 +86,6 @@ public abstract class BaseEnemy : MonoBehaviour
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null) player = playerObj.transform;
 
-        // 🔥 记住出生地，作为巡逻领地中心
         startPosition = transform.position;
 
         if (agent != null)
@@ -90,14 +95,10 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    // ==========================================
-    // 2. 状态机中枢 (每帧驱动)
-    // ==========================================
     protected virtual void Update()
     {
         if (isDead || player == null) return;
 
-        // 🔥 新增：如果没有被外挂劫持，才执行基础的巡逻/追击/攻击逻辑
         if (!isAIHijacked)
         {
             switch (currentState)
@@ -105,6 +106,8 @@ public abstract class BaseEnemy : MonoBehaviour
                 case AIState.Idle: UpdateIdleState(); break;
                 case AIState.Chase: UpdateChaseState(); break;
                 case AIState.Attack: UpdateAttackState(); break;
+                case AIState.Retreat: UpdateRetreatState(); break;
+                case AIState.Strafe: UpdateStrafeState(); break;
             }
         }
 
@@ -112,49 +115,113 @@ public abstract class BaseEnemy : MonoBehaviour
         {
             anim.SetFloat("Speed", agent.velocity.magnitude, 0.1f, Time.deltaTime);
 
-            // 🔥 修改：如果被外挂劫持了，也算是处于战斗状态 (InCombat)
-            bool inCombat = (currentState == AIState.Chase || currentState == AIState.Attack || isAIHijacked);
+            if (agent.velocity.magnitude > 0.1f)
+            {
+                Vector3 localVelocity = transform.InverseTransformDirection(agent.velocity);
+                anim.SetFloat("MoveX", localVelocity.x / agent.speed, 0.1f, Time.deltaTime);
+                anim.SetFloat("MoveZ", localVelocity.z / agent.speed, 0.1f, Time.deltaTime);
+            }
+            else
+            {
+                anim.SetFloat("MoveX", 0, 0.1f, Time.deltaTime);
+                anim.SetFloat("MoveZ", 0, 0.1f, Time.deltaTime);
+            }
+
+            bool inCombat = (currentState == AIState.Chase || currentState == AIState.Attack ||
+                             currentState == AIState.Retreat || currentState == AIState.Strafe || isAIHijacked);
             anim.SetBool("InCombat", inCombat);
         }
     }
 
-    // ==========================================
-    // 3. 🌟 重写：待机与巡逻逻辑
-    // ==========================================
-    protected virtual void UpdateIdleState()
+    protected void FaceTarget(Vector3 targetPos)
     {
-        // 1. 索敌逻辑：优先看玩家在不在视野内
-        float distance = Vector3.Distance(transform.position, player.position);
-        if (distance <= detectionRange)
+        if (isRotationLocked) return;
+        Vector3 direction = (targetPos - transform.position).normalized;
+        direction.y = 0;
+        if (direction != Vector3.zero)
         {
-            // 发现玩家，切入战斗！
-            agent.speed = moveSpeed; // 切换为狂奔速度
+            transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
+        }
+    }
+
+    protected virtual void UpdateRetreatState()
+    {
+        FaceTarget(player.position);
+
+        if (!agent.pathPending && agent.remainingDistance <= 0.5f)
+        {
+            EnterStrafeState();
+        }
+    }
+
+    protected void EnterStrafeState()
+    {
+        ChangeState(AIState.Strafe);
+        strafeTimer = 0f;
+        strafeDirection = Random.value > 0.5f ? 1 : -1;
+
+        if (agent != null)
+        {
+            agent.speed = strafeSpeed;
+            agent.isStopped = false;
+        }
+    }
+
+    protected virtual void UpdateStrafeState()
+    {
+        FaceTarget(player.position);
+
+        strafeTimer += Time.deltaTime;
+
+        // 🔥 核心修改：游走时间一到，立即切回 Chase 发起下一次攻击！
+        if (strafeTimer >= maxStrafeTime)
+        {
             ChangeState(AIState.Chase);
             return;
         }
 
-        // 2. 巡逻溜达逻辑
+        Vector3 dirToPlayer = (player.position - transform.position).normalized;
+        dirToPlayer.y = 0;
+        Vector3 rightDir = Vector3.Cross(Vector3.up, dirToPlayer) * strafeDirection;
+        Vector3 strafeTarget = transform.position + rightDir * 2.0f;
+
+        NavMeshHit hit;
+        if (NavMesh.SamplePosition(strafeTarget, out hit, 1.5f, NavMesh.AllAreas))
+        {
+            agent.SetDestination(hit.position);
+        }
+        else
+        {
+            strafeDirection *= -1;
+        }
+    }
+
+    protected virtual void UpdateIdleState()
+    {
+        float distance = Vector3.Distance(transform.position, player.position);
+        if (distance <= detectionRange)
+        {
+            agent.speed = moveSpeed;
+            ChangeState(AIState.Chase);
+            return;
+        }
+
         if (enablePatrol && agent != null && agent.isActiveAndEnabled)
         {
-            agent.speed = patrolSpeed; // 强制切换为散步速度
-
+            agent.speed = patrolSpeed;
             if (isWaiting)
             {
-                // 发呆中，累计时间
                 patrolTimer += Time.deltaTime;
                 if (patrolTimer >= patrolWaitTime)
                 {
                     isWaiting = false;
-                    SetNewPatrolDestination(); // 时间到，找下一个目标点
+                    SetNewPatrolDestination();
                 }
             }
             else
             {
-                // 正在散步中，检查是否走到目的地了
-                // pathPending 表示还在算路，remainingDistance 是剩余距离
                 if (!agent.pathPending && agent.remainingDistance <= 0.2f)
                 {
-                    // 走到了！开始发呆
                     isWaiting = true;
                     patrolTimer = 0f;
                 }
@@ -162,16 +229,11 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    // 🔥 生成安全的随机巡逻点
     private void SetNewPatrolDestination()
     {
-        // 在出生点周围生成一个随机的二维圆内坐标
         Vector2 randomDir = Random.insideUnitCircle * patrolRadius;
         Vector3 randomPos = startPosition + new Vector3(randomDir.x, 0, randomDir.y);
-
-        // ⚠️ 极其重要：验证这个随机点是不是在合法的寻路网格上
         NavMeshHit hit;
-        // 采样半径设为 patrolRadius，如果在范围内找到合法的地板，就赋值给 hit
         if (NavMesh.SamplePosition(randomPos, out hit, patrolRadius, NavMesh.AllAreas))
         {
             agent.SetDestination(hit.position);
@@ -179,15 +241,11 @@ public abstract class BaseEnemy : MonoBehaviour
         }
         else
         {
-            // 万一真随到了不可达的地方（比如死角），干脆原地再等一会儿
             isWaiting = true;
             patrolTimer = 0f;
         }
     }
 
-    // ==========================================
-    // 追逐逻辑
-    // ==========================================
     protected virtual void UpdateChaseState()
     {
         float distance = Vector3.Distance(transform.position, player.position);
@@ -198,11 +256,9 @@ public abstract class BaseEnemy : MonoBehaviour
             return;
         }
 
-        // 脱战逻辑
         if (distance > loseAggroRange)
         {
             agent.isStopped = true;
-            // 脱战后，重置巡逻状态，让它先发一会儿呆再回去巡逻
             isWaiting = true;
             patrolTimer = 0f;
             ChangeState(AIState.Idle);
@@ -215,6 +271,7 @@ public abstract class BaseEnemy : MonoBehaviour
         }
         else
         {
+            agent.speed = moveSpeed;
             agent.isStopped = false;
             agent.SetDestination(player.position);
         }
@@ -224,29 +281,20 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         agent.isStopped = true;
 
-        // 🔥 核心修复：如果方向没被锁死，才允许怪物转身盯着玩家
-        if (!isRotationLocked)
-        {
-            Vector3 direction = (player.position - transform.position).normalized;
-            direction.y = 0;
-            if (direction != Vector3.zero)
-            {
-                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
-            }
-        }
+        FaceTarget(player.position);
 
         float distance = Vector3.Distance(transform.position, player.position);
 
         if (!isAttacking && distance > attackRange)
         {
-            agent.speed = moveSpeed; // 确保切回追逐时是跑动速度
+            agent.speed = moveSpeed;
             ChangeState(AIState.Chase);
             return;
         }
 
-        if (!isAttacking && Time.time >= lastAttackTime + attackCooldown)
+        // 🔥 核心修改：没有冷却判定了，只要它想打，直接打！
+        if (!isAttacking)
         {
-            lastAttackTime = Time.time;
             isAttacking = true;
             PerformAttack();
         }
@@ -265,81 +313,80 @@ public abstract class BaseEnemy : MonoBehaviour
 
     public virtual void OnAttackAnimEnd()
     {
+        if (isDead) return;
+
         isAttacking = false;
-        isRotationLocked = false; // 🔥 打完收招结束了，解开脖子的锁
+        isRotationLocked = false;
+
+        if (enableTacticalMovement && !skipTacticalThisTime && player != null && agent != null && agent.isActiveAndEnabled)
+        {
+            ChangeState(AIState.Retreat);
+
+            Vector3 dirAway = (transform.position - player.position).normalized;
+            dirAway.y = 0;
+            Vector3 target = transform.position + dirAway * retreatDistance;
+
+            NavMeshHit hit;
+            if (NavMesh.SamplePosition(target, out hit, retreatDistance, NavMesh.AllAreas))
+                tacticalTargetPos = hit.position;
+            else
+                tacticalTargetPos = transform.position;
+
+            agent.speed = retreatSpeed;
+            agent.isStopped = false;
+            agent.SetDestination(tacticalTargetPos);
+        }
+        else
+        {
+            ChangeState(AIState.Chase);
+        }
+
+        skipTacticalThisTime = false;
     }
 
-    // ==========================================
-    // 💀 死亡指令接收与击飞处理
-    // ==========================================
     public virtual void TriggerDeath()
     {
         isDead = true;
         currentState = AIState.Dead;
-
-        // 🔪 核心保护：强行叫停可能正在突进/飞扑的协程，防止尸体自己往前飞
         StopAllCoroutines();
 
         if (agent != null && agent.isActiveAndEnabled)
         {
             agent.isStopped = true;
-
-            // 判断需不需要击飞表现
             if (deathKnockbackDistance > 0)
-            {
                 StartCoroutine(DeathKnockbackCoroutine());
-            }
             else
-            {
-                // 如果距离填 0，则原地倒下，彻底关闭寻路防止挡路
                 agent.enabled = false;
-            }
         }
     }
 
-    // 💨 死亡击飞物理滑行协程
     protected IEnumerator DeathKnockbackCoroutine()
     {
         float timer = 0f;
         float speed = deathKnockbackDistance / deathKnockbackDuration;
-
-        // 智能计算被击飞的方向：远离玩家
         Vector3 pushDir = -transform.forward;
         if (player != null)
         {
             pushDir = (transform.position - player.position).normalized;
-            pushDir.y = 0; // 贴地滑行
+            pushDir.y = 0;
         }
-
         while (timer < deathKnockbackDuration)
         {
             if (agent == null || !agent.isActiveAndEnabled) break;
-
             agent.Move(pushDir * speed * Time.deltaTime);
             timer += Time.deltaTime;
             yield return null;
         }
-
-        // 滑行彻底结束，让出寻路网格，防止地上的尸体卡住其他活着的怪物
-        if (agent != null)
-        {
-            agent.enabled = false;
-        }
+        if (agent != null) agent.enabled = false;
     }
 
-    // ==========================================
-    // 受击打断
-    // ==========================================
     public virtual void OnHitInterrupt()
     {
         isAttacking = false;
-        isRotationLocked = false; // 🔥 挨打中断了，也要解开锁
+        isRotationLocked = false;
+        skipTacticalThisTime = false;
 
-        if (agent != null && agent.isActiveAndEnabled)
-        {
-            agent.isStopped = true;
-        }
-
+        if (agent != null && agent.isActiveAndEnabled) agent.isStopped = true;
         StopAllCoroutines();
 
         if (anim != null)
@@ -351,27 +398,22 @@ public abstract class BaseEnemy : MonoBehaviour
             anim.ResetTrigger("FeiPu");
         }
 
-        agent.speed = moveSpeed; // 挨打醒来后肯定是想跑着追你
+        agent.speed = moveSpeed;
         ChangeState(AIState.Chase);
 
         if (gameObject.activeInHierarchy && !isDead)
-        {
             StartCoroutine(KnockbackCoroutine());
-        }
     }
 
     protected IEnumerator KnockbackCoroutine()
     {
         if (agent == null || !agent.isActiveAndEnabled) yield break;
-
         float timer = 0f;
         float speed = knockbackDistance / knockbackDuration;
         Vector3 pushDir = -transform.forward;
-
         while (timer < knockbackDuration)
         {
             if (isDead || agent == null || !agent.isActiveAndEnabled) break;
-
             agent.Move(pushDir * speed * Time.deltaTime);
             timer += Time.deltaTime;
             yield return null;
@@ -382,22 +424,9 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(transform.position, detectionRange);
-
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(transform.position, stopDistance);
-
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRange);
-
-        if (Application.isPlaying)
-        {
-            Gizmos.color = new Color(0, 1, 0, 0.2f);
-            Gizmos.DrawWireSphere(startPosition, patrolRadius);
-        }
-        else
-        {
-            Gizmos.color = new Color(0, 1, 0, 0.2f);
-            Gizmos.DrawWireSphere(transform.position, patrolRadius);
-        }
     }
 }
