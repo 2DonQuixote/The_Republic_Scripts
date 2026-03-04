@@ -25,7 +25,6 @@ public abstract class BaseEnemy : MonoBehaviour
     public float stopDistance = 1.2f;
     [Tooltip("追击玩家时的奔跑速度")]
     public float moveSpeed = 4.5f;
-    // 🔥 已删除 attackCooldown，怪物的攻击间隔现在完全由战术走位的时间决定！
 
     [Header("=== 🚶 巡逻 (Patrol) 配置 ===")]
     public bool enablePatrol = true;
@@ -33,7 +32,11 @@ public abstract class BaseEnemy : MonoBehaviour
     public float patrolRadius = 6.0f;
     public float patrolWaitTime = 2.5f;
 
-    // 🔥🔥🔥 新增：战术走位配置 🔥🔥🔥
+    // 🔥🔥🔥 新增：Root Motion 配置 🔥🔥🔥
+    [Header("=== 🏃 动画驱动 (Root Motion) ===")]
+    [Tooltip("是否使用动画的真实步伐来控制移动？(极大提升真实感，告别滑步)")]
+    public bool useRootMotion = true;
+
     [Header("=== 🧠 战术走位 (替代攻击冷却) ===")]
     [Tooltip("是否在近战攻击结束后拉开距离并游走观察？(如果不勾选，怪物将变成没有冷却的疯狗)")]
     public bool enableTacticalMovement = true;
@@ -65,6 +68,7 @@ public abstract class BaseEnemy : MonoBehaviour
     protected bool isDead = false;
     public bool isAIHijacked = false;
     protected bool isRotationLocked = false;
+    protected bool isKnockedBack = false; // 🔥 新增：标记是否正在被击飞
 
     // 用来控制“这次攻击结束后，是否跳过战术走位”(供远程子类调用)
     protected bool skipTacticalThisTime = false;
@@ -92,6 +96,12 @@ public abstract class BaseEnemy : MonoBehaviour
         {
             agent.speed = moveSpeed;
             agent.stoppingDistance = 0f;
+
+            // 🔥 Root Motion 初始化：如果是动画驱动，就剥夺大脑的平移权限
+            if (useRootMotion)
+            {
+                agent.updatePosition = false;
+            }
         }
     }
 
@@ -133,6 +143,33 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
+    // 🔥🔥🔥 核心：Root Motion 动画物理位移引擎 🔥🔥🔥
+    protected virtual void OnAnimatorMove()
+    {
+        // 如果死了、没开选项、或者组件不全，不执行
+        if (isDead || !useRootMotion || agent == null || anim == null) return;
+
+        // 如果处于外挂接管（站桩施法）或者正在被击飞，暂时将权限还给 NavMeshAgent/代码
+        if (isAIHijacked || isKnockedBack)
+        {
+            agent.updatePosition = true;
+            return;
+        }
+
+        // 平时保证 Agent 不要自己乱跑
+        agent.updatePosition = false;
+
+        // 1. 获取动画师做的真实的步伐位移差值
+        Vector3 animDeltaPosition = anim.deltaPosition;
+        animDeltaPosition.y = 0; // 锁死高度，防止走着走着飞起来
+
+        // 2. 将动画位移叠加到真实模型上
+        transform.position += animDeltaPosition;
+
+        // 3. 将真实位置同步给寻路大脑，让大脑从这里重新算路线
+        agent.nextPosition = transform.position;
+    }
+
     protected void FaceTarget(Vector3 targetPos)
     {
         if (isRotationLocked) return;
@@ -142,6 +179,11 @@ public abstract class BaseEnemy : MonoBehaviour
         {
             transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
         }
+    }
+
+    public void ForceEnterStrafe()
+    {
+        EnterStrafeState();
     }
 
     protected virtual void UpdateRetreatState()
@@ -173,7 +215,6 @@ public abstract class BaseEnemy : MonoBehaviour
 
         strafeTimer += Time.deltaTime;
 
-        // 🔥 核心修改：游走时间一到，立即切回 Chase 发起下一次攻击！
         if (strafeTimer >= maxStrafeTime)
         {
             ChangeState(AIState.Chase);
@@ -292,7 +333,6 @@ public abstract class BaseEnemy : MonoBehaviour
             return;
         }
 
-        // 🔥 核心修改：没有冷却判定了，只要它想打，直接打！
         if (!isAttacking)
         {
             isAttacking = true;
@@ -348,6 +388,10 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         isDead = true;
         currentState = AIState.Dead;
+
+        // 🔥 死亡瞬间，恢复 Agent 控制权以便正常播放击飞滑行
+        if (useRootMotion && agent != null) agent.updatePosition = true;
+
         StopAllCoroutines();
 
         if (agent != null && agent.isActiveAndEnabled)
@@ -408,6 +452,9 @@ public abstract class BaseEnemy : MonoBehaviour
     protected IEnumerator KnockbackCoroutine()
     {
         if (agent == null || !agent.isActiveAndEnabled) yield break;
+
+        isKnockedBack = true; // 🔥 标记开始击飞，防止 Root Motion 捣乱
+
         float timer = 0f;
         float speed = knockbackDistance / knockbackDuration;
         Vector3 pushDir = -transform.forward;
@@ -418,6 +465,8 @@ public abstract class BaseEnemy : MonoBehaviour
             timer += Time.deltaTime;
             yield return null;
         }
+
+        isKnockedBack = false; // 🔥 击飞结束，恢复 Root Motion
     }
 
     private void OnDrawGizmosSelected()
