@@ -5,17 +5,9 @@ using System.Collections;
 // 【架构规范】抽象基类：作为所有怪物的模板，承载寻路、状态切换等通用逻辑
 public abstract class BaseEnemy : MonoBehaviour
 {
-    // ==========================================
-    // 状态枚举
-    // ==========================================
     public enum AIState
     {
-        Idle,       // 发呆 / 巡逻
-        Chase,      // 追逐玩家
-        Attack,     // 正在攻击
-        Dead,       // 死亡
-        Retreat,    // 🔥 战术动作：打完后撤
-        Strafe      // 🔥 战术动作：左右试探游走
+        Idle, Chase, Attack, Dead, Retreat, Strafe
     }
 
     [Header("=== 基础 AI 属性 ===")]
@@ -23,7 +15,6 @@ public abstract class BaseEnemy : MonoBehaviour
     public float loseAggroRange = 15f;
     public float attackRange = 1.5f;
     public float stopDistance = 1.2f;
-    [Tooltip("追击玩家时的奔跑速度")]
     public float moveSpeed = 4.5f;
 
     [Header("=== 🚶 巡逻 (Patrol) 配置 ===")]
@@ -32,21 +23,14 @@ public abstract class BaseEnemy : MonoBehaviour
     public float patrolRadius = 6.0f;
     public float patrolWaitTime = 2.5f;
 
-    // 🔥🔥🔥 新增：Root Motion 配置 🔥🔥🔥
     [Header("=== 🏃 动画驱动 (Root Motion) ===")]
-    [Tooltip("是否使用动画的真实步伐来控制移动？(极大提升真实感，告别滑步)")]
     public bool useRootMotion = true;
 
     [Header("=== 🧠 战术走位 (替代攻击冷却) ===")]
-    [Tooltip("是否在近战攻击结束后拉开距离并游走观察？(如果不勾选，怪物将变成没有冷却的疯狗)")]
     public bool enableTacticalMovement = true;
-    [Tooltip("后撤时的速度 (建议调快，像后跳)")]
     public float retreatSpeed = 6.0f;
-    [Tooltip("后撤的安全距离")]
     public float retreatDistance = 3.5f;
-    [Tooltip("左右游走时的速度 (建议调慢，充满压迫感)")]
     public float strafeSpeed = 1.5f;
-    [Tooltip("🔥 游走观察的最大时间 (这个值现在就是怪物的攻击冷却时间！)")]
     public float maxStrafeTime = 2.0f;
 
     [Header("=== 受击与死亡配置 ===")]
@@ -55,10 +39,8 @@ public abstract class BaseEnemy : MonoBehaviour
     public float deathKnockbackDistance = 0.0f;
     public float deathKnockbackDuration = 0.0f;
 
-    [Header("=== 状态监控 (仅供查看) ===")]
     public AIState currentState = AIState.Idle;
 
-    // --- 内部组件 ---
     protected Transform player;
     protected NavMeshAgent agent;
     protected Animator anim;
@@ -68,40 +50,33 @@ public abstract class BaseEnemy : MonoBehaviour
     protected bool isDead = false;
     public bool isAIHijacked = false;
     protected bool isRotationLocked = false;
-    protected bool isKnockedBack = false; // 🔥 新增：标记是否正在被击飞
+    protected bool isKnockedBack = false;
 
-    // 用来控制“这次攻击结束后，是否跳过战术走位”(供远程子类调用)
+    // 🔥🔥🔥 新增：代码强制位移锁（绿灯/红灯）
+    public bool isCodeMoving = false;
+
     protected bool skipTacticalThisTime = false;
 
-    // --- 巡逻与战术变量 ---
     protected Vector3 startPosition;
     protected float patrolTimer = 0f;
     protected bool isWaiting = false;
-
     protected float strafeTimer = 0f;
-    protected int strafeDirection = 1; // 1 右， -1 左
+    protected int strafeDirection = 1;
     protected Vector3 tacticalTargetPos;
 
     protected virtual void Start()
     {
         agent = GetComponent<NavMeshAgent>();
         anim = GetComponentInChildren<Animator>();
-
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null) player = playerObj.transform;
-
         startPosition = transform.position;
 
         if (agent != null)
         {
             agent.speed = moveSpeed;
             agent.stoppingDistance = 0f;
-
-            // 🔥 Root Motion 初始化：如果是动画驱动，就剥夺大脑的平移权限
-            if (useRootMotion)
-            {
-                agent.updatePosition = false;
-            }
+            if (useRootMotion) agent.updatePosition = false;
         }
     }
 
@@ -124,7 +99,6 @@ public abstract class BaseEnemy : MonoBehaviour
         if (anim != null && !isDead)
         {
             anim.SetFloat("Speed", agent.velocity.magnitude, 0.1f, Time.deltaTime);
-
             if (agent.velocity.magnitude > 0.1f)
             {
                 Vector3 localVelocity = transform.InverseTransformDirection(agent.velocity);
@@ -143,30 +117,23 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    // 🔥🔥🔥 核心：Root Motion 动画物理位移引擎 🔥🔥🔥
+    // 🔥🔥🔥 完美防抽搐拦截机制 🔥🔥🔥
     protected virtual void OnAnimatorMove()
     {
-        // 如果死了、没开选项、或者组件不全，不执行
         if (isDead || !useRootMotion || agent == null || anim == null) return;
 
-        // 如果处于外挂接管（站桩施法）或者正在被击飞，暂时将权限还给 NavMeshAgent/代码
-        if (isAIHijacked || isKnockedBack)
+        // 【核心解药】：只要代码正在发功推怪物（发波、击飞、突进、后滑），立刻剥夺动画位移权！
+        if (isAIHijacked || isKnockedBack || isCodeMoving)
         {
-            agent.updatePosition = true;
+            agent.updatePosition = true; // 把位置更新权还给代码和Agent
             return;
         }
 
-        // 平时保证 Agent 不要自己乱跑
+        // 平时逛街或绕圈游走时：动画完全掌权！
         agent.updatePosition = false;
-
-        // 1. 获取动画师做的真实的步伐位移差值
         Vector3 animDeltaPosition = anim.deltaPosition;
-        animDeltaPosition.y = 0; // 锁死高度，防止走着走着飞起来
-
-        // 2. 将动画位移叠加到真实模型上
+        animDeltaPosition.y = 0;
         transform.position += animDeltaPosition;
-
-        // 3. 将真实位置同步给寻路大脑，让大脑从这里重新算路线
         agent.nextPosition = transform.position;
     }
 
@@ -181,19 +148,12 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    public void ForceEnterStrafe()
-    {
-        EnterStrafeState();
-    }
+    public void ForceEnterStrafe() { EnterStrafeState(); }
 
     protected virtual void UpdateRetreatState()
     {
         FaceTarget(player.position);
-
-        if (!agent.pathPending && agent.remainingDistance <= 0.5f)
-        {
-            EnterStrafeState();
-        }
+        if (!agent.pathPending && agent.remainingDistance <= 0.5f) EnterStrafeState();
     }
 
     protected void EnterStrafeState()
@@ -201,7 +161,6 @@ public abstract class BaseEnemy : MonoBehaviour
         ChangeState(AIState.Strafe);
         strafeTimer = 0f;
         strafeDirection = Random.value > 0.5f ? 1 : -1;
-
         if (agent != null)
         {
             agent.speed = strafeSpeed;
@@ -212,29 +171,21 @@ public abstract class BaseEnemy : MonoBehaviour
     protected virtual void UpdateStrafeState()
     {
         FaceTarget(player.position);
-
         strafeTimer += Time.deltaTime;
-
         if (strafeTimer >= maxStrafeTime)
         {
             ChangeState(AIState.Chase);
             return;
         }
-
         Vector3 dirToPlayer = (player.position - transform.position).normalized;
         dirToPlayer.y = 0;
         Vector3 rightDir = Vector3.Cross(Vector3.up, dirToPlayer) * strafeDirection;
         Vector3 strafeTarget = transform.position + rightDir * 2.0f;
-
         NavMeshHit hit;
         if (NavMesh.SamplePosition(strafeTarget, out hit, 1.5f, NavMesh.AllAreas))
-        {
             agent.SetDestination(hit.position);
-        }
         else
-        {
             strafeDirection *= -1;
-        }
     }
 
     protected virtual void UpdateIdleState()
@@ -246,7 +197,6 @@ public abstract class BaseEnemy : MonoBehaviour
             ChangeState(AIState.Chase);
             return;
         }
-
         if (enablePatrol && agent != null && agent.isActiveAndEnabled)
         {
             agent.speed = patrolSpeed;
@@ -290,13 +240,11 @@ public abstract class BaseEnemy : MonoBehaviour
     protected virtual void UpdateChaseState()
     {
         float distance = Vector3.Distance(transform.position, player.position);
-
         if (distance <= attackRange)
         {
             ChangeState(AIState.Attack);
             return;
         }
-
         if (distance > loseAggroRange)
         {
             agent.isStopped = true;
@@ -305,11 +253,7 @@ public abstract class BaseEnemy : MonoBehaviour
             ChangeState(AIState.Idle);
             return;
         }
-
-        if (distance <= stopDistance)
-        {
-            agent.isStopped = true;
-        }
+        if (distance <= stopDistance) agent.isStopped = true;
         else
         {
             agent.speed = moveSpeed;
@@ -321,18 +265,14 @@ public abstract class BaseEnemy : MonoBehaviour
     protected virtual void UpdateAttackState()
     {
         agent.isStopped = true;
-
         FaceTarget(player.position);
-
         float distance = Vector3.Distance(transform.position, player.position);
-
         if (!isAttacking && distance > attackRange)
         {
             agent.speed = moveSpeed;
             ChangeState(AIState.Chase);
             return;
         }
-
         if (!isAttacking)
         {
             isAttacking = true;
@@ -340,10 +280,7 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    protected virtual void PerformAttack()
-    {
-        Debug.LogWarning("BaseEnemy 的 PerformAttack 未被子类重写！");
-    }
+    protected virtual void PerformAttack() { Debug.LogWarning("BaseEnemy 的 PerformAttack 未被重写！"); }
 
     public void ChangeState(AIState newState)
     {
@@ -354,18 +291,14 @@ public abstract class BaseEnemy : MonoBehaviour
     public virtual void OnAttackAnimEnd()
     {
         if (isDead) return;
-
         isAttacking = false;
         isRotationLocked = false;
-
         if (enableTacticalMovement && !skipTacticalThisTime && player != null && agent != null && agent.isActiveAndEnabled)
         {
             ChangeState(AIState.Retreat);
-
             Vector3 dirAway = (transform.position - player.position).normalized;
             dirAway.y = 0;
             Vector3 target = transform.position + dirAway * retreatDistance;
-
             NavMeshHit hit;
             if (NavMesh.SamplePosition(target, out hit, retreatDistance, NavMesh.AllAreas))
                 tacticalTargetPos = hit.position;
@@ -376,10 +309,7 @@ public abstract class BaseEnemy : MonoBehaviour
             agent.isStopped = false;
             agent.SetDestination(tacticalTargetPos);
         }
-        else
-        {
-            ChangeState(AIState.Chase);
-        }
+        else ChangeState(AIState.Chase);
 
         skipTacticalThisTime = false;
     }
@@ -388,19 +318,13 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         isDead = true;
         currentState = AIState.Dead;
-
-        // 🔥 死亡瞬间，恢复 Agent 控制权以便正常播放击飞滑行
         if (useRootMotion && agent != null) agent.updatePosition = true;
-
         StopAllCoroutines();
-
         if (agent != null && agent.isActiveAndEnabled)
         {
             agent.isStopped = true;
-            if (deathKnockbackDistance > 0)
-                StartCoroutine(DeathKnockbackCoroutine());
-            else
-                agent.enabled = false;
+            if (deathKnockbackDistance > 0) StartCoroutine(DeathKnockbackCoroutine());
+            else agent.enabled = false;
         }
     }
 
@@ -429,10 +353,8 @@ public abstract class BaseEnemy : MonoBehaviour
         isAttacking = false;
         isRotationLocked = false;
         skipTacticalThisTime = false;
-
         if (agent != null && agent.isActiveAndEnabled) agent.isStopped = true;
         StopAllCoroutines();
-
         if (anim != null)
         {
             anim.ResetTrigger("Attack");
@@ -441,20 +363,15 @@ public abstract class BaseEnemy : MonoBehaviour
             anim.ResetTrigger("GrabSuccess");
             anim.ResetTrigger("FeiPu");
         }
-
         agent.speed = moveSpeed;
         ChangeState(AIState.Chase);
-
-        if (gameObject.activeInHierarchy && !isDead)
-            StartCoroutine(KnockbackCoroutine());
+        if (gameObject.activeInHierarchy && !isDead) StartCoroutine(KnockbackCoroutine());
     }
 
     protected IEnumerator KnockbackCoroutine()
     {
         if (agent == null || !agent.isActiveAndEnabled) yield break;
-
-        isKnockedBack = true; // 🔥 标记开始击飞，防止 Root Motion 捣乱
-
+        isKnockedBack = true;
         float timer = 0f;
         float speed = knockbackDistance / knockbackDuration;
         Vector3 pushDir = -transform.forward;
@@ -465,17 +382,6 @@ public abstract class BaseEnemy : MonoBehaviour
             timer += Time.deltaTime;
             yield return null;
         }
-
-        isKnockedBack = false; // 🔥 击飞结束，恢复 Root Motion
-    }
-
-    private void OnDrawGizmosSelected()
-    {
-        Gizmos.color = Color.yellow;
-        Gizmos.DrawWireSphere(transform.position, detectionRange);
-        Gizmos.color = Color.cyan;
-        Gizmos.DrawWireSphere(transform.position, stopDistance);
-        Gizmos.color = Color.red;
-        Gizmos.DrawWireSphere(transform.position, attackRange);
+        isKnockedBack = false;
     }
 }
