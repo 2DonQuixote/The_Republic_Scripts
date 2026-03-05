@@ -25,13 +25,19 @@ public abstract class BaseEnemy : MonoBehaviour
 
     [Header("=== 🏃 动画驱动 (Root Motion) ===")]
     public bool useRootMotion = true;
+    [Tooltip("动画切换的平滑过渡时间 (越大越迟钝，越小越生硬)")]
+    public float animDampTime = 0.25f; // 🔥 平滑油门缓冲时间
 
-    [Header("=== 🧠 战术走位 (替代攻击冷却) ===")]
+    [Header("=== 🧠 战术走位 (随机攻击冷却) ===")]
     public bool enableTacticalMovement = true;
-    public float retreatSpeed = 6.0f;
+    public float retreatSpeed = 3.0f;
     public float retreatDistance = 3.5f;
-    public float strafeSpeed = 1.5f;
-    public float maxStrafeTime = 2.0f;
+    public float strafeSpeed = 2.0f;
+
+    [Tooltip("最短绕圈时间 (最少冷却)")]
+    public float minStrafeTime = 1.0f;
+    [Tooltip("最长绕圈时间 (最多冷却)")]
+    public float maxStrafeTime = 3.0f;
 
     [Header("=== 受击与死亡配置 ===")]
     public float knockbackDistance = 0.3f;
@@ -52,17 +58,20 @@ public abstract class BaseEnemy : MonoBehaviour
     protected bool isRotationLocked = false;
     protected bool isKnockedBack = false;
 
-    // 🔥🔥🔥 新增：代码强制位移锁（绿灯/红灯）
+    // 代码强制位移锁（绿灯/红灯）
     public bool isCodeMoving = false;
-
     protected bool skipTacticalThisTime = false;
 
     protected Vector3 startPosition;
     protected float patrolTimer = 0f;
     protected bool isWaiting = false;
     protected float strafeTimer = 0f;
+    protected float retreatTimer = 0f;
     protected int strafeDirection = 1;
     protected Vector3 tacticalTargetPos;
+
+    // 记录当前这一回合随机抽出的冷却时间
+    protected float currentStrafeTargetTime = 2.0f;
 
     protected virtual void Start()
     {
@@ -96,19 +105,21 @@ public abstract class BaseEnemy : MonoBehaviour
             }
         }
 
+        // 动画状态机同步
         if (anim != null && !isDead)
         {
-            anim.SetFloat("Speed", agent.velocity.magnitude, 0.1f, Time.deltaTime);
+            // 🔥 融入了 animDampTime：让 Blend Tree 混合过渡如丝般顺滑
+            anim.SetFloat("Speed", agent.velocity.magnitude, animDampTime, Time.deltaTime);
             if (agent.velocity.magnitude > 0.1f)
             {
                 Vector3 localVelocity = transform.InverseTransformDirection(agent.velocity);
-                anim.SetFloat("MoveX", localVelocity.x / agent.speed, 0.1f, Time.deltaTime);
-                anim.SetFloat("MoveZ", localVelocity.z / agent.speed, 0.1f, Time.deltaTime);
+                anim.SetFloat("MoveX", localVelocity.x / agent.speed, animDampTime, Time.deltaTime);
+                anim.SetFloat("MoveZ", localVelocity.z / agent.speed, animDampTime, Time.deltaTime);
             }
             else
             {
-                anim.SetFloat("MoveX", 0, 0.1f, Time.deltaTime);
-                anim.SetFloat("MoveZ", 0, 0.1f, Time.deltaTime);
+                anim.SetFloat("MoveX", 0, animDampTime, Time.deltaTime);
+                anim.SetFloat("MoveZ", 0, animDampTime, Time.deltaTime);
             }
 
             bool inCombat = (currentState == AIState.Chase || currentState == AIState.Attack ||
@@ -117,22 +128,29 @@ public abstract class BaseEnemy : MonoBehaviour
         }
     }
 
-    // 🔥🔥🔥 完美防抽搐拦截机制 🔥🔥🔥
     protected virtual void OnAnimatorMove()
     {
         if (isDead || !useRootMotion || agent == null || anim == null) return;
 
-        // 【核心解药】：只要代码正在发功推怪物（发波、击飞、突进、后滑），立刻剥夺动画位移权！
+        // 如果代码接管，则取消动画位移
         if (isAIHijacked || isKnockedBack || isCodeMoving)
         {
-            agent.updatePosition = true; // 把位置更新权还给代码和Agent
+            agent.updatePosition = true;
             return;
         }
 
-        // 平时逛街或绕圈游走时：动画完全掌权！
         agent.updatePosition = false;
         Vector3 animDeltaPosition = anim.deltaPosition;
         animDeltaPosition.y = 0;
+
+        // 🌟🌟🌟 核心正骨手术：强制直线冲刺 🌟🌟🌟
+        if (isRotationLocked)
+        {
+            // 提取出正前方 (transform.forward) 的位移分量，把左右偏移（歪的幅度）抹杀掉
+            float forwardMove = Vector3.Dot(animDeltaPosition, transform.forward);
+            animDeltaPosition = transform.forward * forwardMove;
+        }
+
         transform.position += animDeltaPosition;
         agent.nextPosition = transform.position;
     }
@@ -153,13 +171,22 @@ public abstract class BaseEnemy : MonoBehaviour
     protected virtual void UpdateRetreatState()
     {
         FaceTarget(player.position);
-        if (!agent.pathPending && agent.remainingDistance <= 0.5f) EnterStrafeState();
+        retreatTimer += Time.deltaTime;
+
+        if ((!agent.pathPending && agent.remainingDistance <= 0.5f) || retreatTimer >= 1.5f)
+        {
+            EnterStrafeState();
+        }
     }
 
     protected void EnterStrafeState()
     {
         ChangeState(AIState.Strafe);
         strafeTimer = 0f;
+
+        // 每次进入左右平移时，在最小值和最大值之间掷骰子！
+        currentStrafeTargetTime = Random.Range(minStrafeTime, maxStrafeTime);
+
         strafeDirection = Random.value > 0.5f ? 1 : -1;
         if (agent != null)
         {
@@ -172,15 +199,19 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         FaceTarget(player.position);
         strafeTimer += Time.deltaTime;
-        if (strafeTimer >= maxStrafeTime)
+
+        // 判断条件：是否达到了本回合随机出来的思考时间
+        if (strafeTimer >= currentStrafeTargetTime)
         {
             ChangeState(AIState.Chase);
             return;
         }
+
         Vector3 dirToPlayer = (player.position - transform.position).normalized;
         dirToPlayer.y = 0;
         Vector3 rightDir = Vector3.Cross(Vector3.up, dirToPlayer) * strafeDirection;
         Vector3 strafeTarget = transform.position + rightDir * 2.0f;
+
         NavMeshHit hit;
         if (NavMesh.SamplePosition(strafeTarget, out hit, 1.5f, NavMesh.AllAreas))
             agent.SetDestination(hit.position);
@@ -296,6 +327,8 @@ public abstract class BaseEnemy : MonoBehaviour
         if (enableTacticalMovement && !skipTacticalThisTime && player != null && agent != null && agent.isActiveAndEnabled)
         {
             ChangeState(AIState.Retreat);
+            retreatTimer = 0f;
+
             Vector3 dirAway = (transform.position - player.position).normalized;
             dirAway.y = 0;
             Vector3 target = transform.position + dirAway * retreatDistance;
@@ -353,6 +386,9 @@ public abstract class BaseEnemy : MonoBehaviour
         isAttacking = false;
         isRotationLocked = false;
         skipTacticalThisTime = false;
+
+        isCodeMoving = false;
+
         if (agent != null && agent.isActiveAndEnabled) agent.isStopped = true;
         StopAllCoroutines();
         if (anim != null)
