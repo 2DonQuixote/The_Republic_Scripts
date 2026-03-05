@@ -3,17 +3,24 @@ using System; // 1. 引入 System 以使用 Action
 
 public class EnemyHealth : MonoBehaviour, IDamageable
 {
-    [Header("属性设置")]
+    [Header("=== 基础属性设置 ===")]
     [SerializeField] private float maxHealth = 100f;
     private float currentHealth;
 
-    // 🔥 删除：不再直接持有 UI 引用，彻底解耦
-    // public EnemyHealthBar healthBar;
+    [Header("=== 精英怪/韧性配置 ===")]
+    [Tooltip("勾选后，该怪物变为精英怪，拥有霸体和架势条")]
+    public bool isElite = false;
 
-    // 🔥 新增：广播血量变化事件 (当前血量, 最大血量)
+    [Tooltip("掉多少比例的血才会出大硬直 (例如 0.2 = 掉20%血破一次防)")]
+    public float poiseThresholdPercent = 0.2f;
+
+    // 内部变量：记录当前累积了多少削韧伤害
+    private float currentPoiseDamage = 0f;
+
+    // 🔥 广播血量变化事件 (当前血量, 最大血量)
     public event Action<float, float> OnHealthChanged;
 
-    [Header("组件引用")]
+    [Header("=== 组件引用 ===")]
     private Animator animator;
     private Collider myCollider;
     private Renderer[] allRenderers;
@@ -35,6 +42,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         if (isDead) return;
 
         currentHealth -= amount;
+        if (currentHealth < 0) currentHealth = 0;
 
         // 🔥 广播：我掉血了！
         OnHealthChanged?.Invoke(currentHealth, maxHealth);
@@ -43,13 +51,56 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         {
             Die();
         }
-        else
+        else if (triggerHitReaction)
         {
-            if (triggerHitReaction && animator != null)
+            // ==========================================
+            // 🔥 核心分流：普通怪 和 精英怪 的不同受击逻辑
+            // ==========================================
+            if (isElite)
             {
-                animator.SetTrigger("Hit");
+                HandleEliteHitReaction(amount);
+            }
+            else
+            {
+                // 普通怪：一打一个硬直，直接打断大脑
+                if (animator != null) animator.SetTrigger("Hit");
                 GetComponent<BaseEnemy>()?.OnHitInterrupt();
             }
+        }
+    }
+
+    // 🔥 新增：专门处理精英怪受击的方法
+    private void HandleEliteHitReaction(float amount)
+    {
+        // 1. 每次受击，累加削韧伤害
+        currentPoiseDamage += amount;
+
+        // 2. 计算具体的破防阈值 (比如 1000血 * 0.2 = 200)
+        float poiseThreshold = maxHealth * poiseThresholdPercent;
+
+        if (currentPoiseDamage >= poiseThreshold)
+        {
+            // 💥【大硬直：破防了！】💥
+            currentPoiseDamage = 0f; // 清空累积池，重新计算下一次破防
+
+            Debug.Log("<color=yellow>精英怪破防！触发大硬直！</color>");
+
+            // 播放大受击动画 (这里你可以共用 Hit，也可以在 Animator 里做一个 HitHeavy)
+            if (animator != null) animator.SetTrigger("Hit");
+
+            // 极其关键：打出大硬直，强行中断它的 AI 动作！
+            GetComponent<BaseEnemy>()?.OnHitInterrupt();
+        }
+        else
+        {
+            // ⚡【小硬直：抽搐霸体】⚡
+            Debug.Log("精英怪霸体抗下攻击，仅触发小抽搐...");
+
+            // 播放抽搐动画 (需要在 Animator 里新增 Twitch 触发器)
+            if (animator != null) animator.SetTrigger("Twitch");
+
+            // 【注意！！】这里我们 绝对不调用 OnHitInterrupt()
+            // 因为没调用它，怪物的攻击协程、寻路状态全都在继续运行，这就是霸体的原理！
         }
     }
 

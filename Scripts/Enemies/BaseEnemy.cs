@@ -26,7 +26,7 @@ public abstract class BaseEnemy : MonoBehaviour
     [Header("=== 🏃 动画驱动 (Root Motion) ===")]
     public bool useRootMotion = true;
     [Tooltip("动画切换的平滑过渡时间 (越大越迟钝，越小越生硬)")]
-    public float animDampTime = 0.25f; // 🔥 平滑油门缓冲时间
+    public float animDampTime = 0.25f;
 
     [Header("=== 🧠 战术走位 (随机攻击冷却) ===")]
     public bool enableTacticalMovement = true;
@@ -39,11 +39,9 @@ public abstract class BaseEnemy : MonoBehaviour
     [Tooltip("最长绕圈时间 (最多冷却)")]
     public float maxStrafeTime = 3.0f;
 
-    [Header("=== 受击与死亡配置 ===")]
-    public float knockbackDistance = 0.3f;
-    public float knockbackDuration = 0.3f;
-    public float deathKnockbackDistance = 0.0f;
-    public float deathKnockbackDuration = 0.0f;
+    [Header("=== 🩸 受击与死亡配置 (动画驱动) ===")]
+    [Tooltip("受击动画的总长度(秒)，在此期间怪物无法行动")]
+    public float hitAnimDuration = 0.5f; // 🔥 现在的受击仅仅是一个计时器
 
     public AIState currentState = AIState.Idle;
 
@@ -58,7 +56,6 @@ public abstract class BaseEnemy : MonoBehaviour
     protected bool isRotationLocked = false;
     protected bool isKnockedBack = false;
 
-    // 代码强制位移锁（绿灯/红灯）
     public bool isCodeMoving = false;
     protected bool skipTacticalThisTime = false;
 
@@ -70,7 +67,6 @@ public abstract class BaseEnemy : MonoBehaviour
     protected int strafeDirection = 1;
     protected Vector3 tacticalTargetPos;
 
-    // 记录当前这一回合随机抽出的冷却时间
     protected float currentStrafeTargetTime = 2.0f;
 
     protected virtual void Start()
@@ -93,7 +89,8 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         if (isDead || player == null) return;
 
-        if (!isAIHijacked)
+        // 🔥 如果大脑没被劫持，且【没有处于受击硬直中】，才允许思考！
+        if (!isAIHijacked && !isKnockedBack)
         {
             switch (currentState)
             {
@@ -105,10 +102,8 @@ public abstract class BaseEnemy : MonoBehaviour
             }
         }
 
-        // 动画状态机同步
         if (anim != null && !isDead)
         {
-            // 🔥 融入了 animDampTime：让 Blend Tree 混合过渡如丝般顺滑
             anim.SetFloat("Speed", agent.velocity.magnitude, animDampTime, Time.deltaTime);
             if (agent.velocity.magnitude > 0.1f)
             {
@@ -130,29 +125,28 @@ public abstract class BaseEnemy : MonoBehaviour
 
     protected virtual void OnAnimatorMove()
     {
-        if (isDead || !useRootMotion || agent == null || anim == null) return;
+        // 🔥 删除了 isDead 的拦截，让怪物死了也能继续播放真实的“倒地滑行位移”！
+        if (!useRootMotion || agent == null || anim == null) return;
 
-        // 如果代码接管，则取消动画位移
-        if (isAIHijacked || isKnockedBack || isCodeMoving)
+        // 🔥 删除了 isKnockedBack，这意味着受击时，动画位移会接管怪物的后退！
+        if (isAIHijacked || isCodeMoving)
         {
-            agent.updatePosition = true;
+            if (agent.isActiveAndEnabled) agent.updatePosition = true;
             return;
         }
 
-        agent.updatePosition = false;
+        if (agent.isActiveAndEnabled) agent.updatePosition = false;
         Vector3 animDeltaPosition = anim.deltaPosition;
         animDeltaPosition.y = 0;
 
-        // 🌟🌟🌟 核心正骨手术：强制直线冲刺 🌟🌟🌟
         if (isRotationLocked)
         {
-            // 提取出正前方 (transform.forward) 的位移分量，把左右偏移（歪的幅度）抹杀掉
             float forwardMove = Vector3.Dot(animDeltaPosition, transform.forward);
             animDeltaPosition = transform.forward * forwardMove;
         }
 
         transform.position += animDeltaPosition;
-        agent.nextPosition = transform.position;
+        if (agent.isActiveAndEnabled) agent.nextPosition = transform.position;
     }
 
     protected void FaceTarget(Vector3 targetPos)
@@ -183,10 +177,7 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         ChangeState(AIState.Strafe);
         strafeTimer = 0f;
-
-        // 每次进入左右平移时，在最小值和最大值之间掷骰子！
         currentStrafeTargetTime = Random.Range(minStrafeTime, maxStrafeTime);
-
         strafeDirection = Random.value > 0.5f ? 1 : -1;
         if (agent != null)
         {
@@ -200,7 +191,6 @@ public abstract class BaseEnemy : MonoBehaviour
         FaceTarget(player.position);
         strafeTimer += Time.deltaTime;
 
-        // 判断条件：是否达到了本回合随机出来的思考时间
         if (strafeTimer >= currentStrafeTargetTime)
         {
             ChangeState(AIState.Chase);
@@ -351,34 +341,15 @@ public abstract class BaseEnemy : MonoBehaviour
     {
         isDead = true;
         currentState = AIState.Dead;
-        if (useRootMotion && agent != null) agent.updatePosition = true;
         StopAllCoroutines();
+
+        // 🔥 彻底删除了强制击退的代码
+        // 仅仅是物理停住，让真正的死亡动画来掌管它到底怎么倒地
         if (agent != null && agent.isActiveAndEnabled)
         {
+            agent.velocity = Vector3.zero;
             agent.isStopped = true;
-            if (deathKnockbackDistance > 0) StartCoroutine(DeathKnockbackCoroutine());
-            else agent.enabled = false;
         }
-    }
-
-    protected IEnumerator DeathKnockbackCoroutine()
-    {
-        float timer = 0f;
-        float speed = deathKnockbackDistance / deathKnockbackDuration;
-        Vector3 pushDir = -transform.forward;
-        if (player != null)
-        {
-            pushDir = (transform.position - player.position).normalized;
-            pushDir.y = 0;
-        }
-        while (timer < deathKnockbackDuration)
-        {
-            if (agent == null || !agent.isActiveAndEnabled) break;
-            agent.Move(pushDir * speed * Time.deltaTime);
-            timer += Time.deltaTime;
-            yield return null;
-        }
-        if (agent != null) agent.enabled = false;
     }
 
     public virtual void OnHitInterrupt()
@@ -386,10 +357,15 @@ public abstract class BaseEnemy : MonoBehaviour
         isAttacking = false;
         isRotationLocked = false;
         skipTacticalThisTime = false;
-
         isCodeMoving = false;
 
-        if (agent != null && agent.isActiveAndEnabled) agent.isStopped = true;
+        // 打断时立刻物理刹车
+        if (agent != null && agent.isActiveAndEnabled)
+        {
+            agent.velocity = Vector3.zero;
+            agent.isStopped = true;
+        }
+
         StopAllCoroutines();
         if (anim != null)
         {
@@ -399,25 +375,24 @@ public abstract class BaseEnemy : MonoBehaviour
             anim.ResetTrigger("GrabSuccess");
             anim.ResetTrigger("FeiPu");
         }
-        agent.speed = moveSpeed;
-        ChangeState(AIState.Chase);
-        if (gameObject.activeInHierarchy && !isDead) StartCoroutine(KnockbackCoroutine());
+
+        // 🔥 替换为纯动画等待协程
+        if (gameObject.activeInHierarchy && !isDead) StartCoroutine(HitRecoverCoroutine());
     }
 
-    protected IEnumerator KnockbackCoroutine()
+    // 🔥 纯计时器：等挨打动画播完
+    protected IEnumerator HitRecoverCoroutine()
     {
-        if (agent == null || !agent.isActiveAndEnabled) yield break;
-        isKnockedBack = true;
-        float timer = 0f;
-        float speed = knockbackDistance / knockbackDuration;
-        Vector3 pushDir = -transform.forward;
-        while (timer < knockbackDuration)
+        isKnockedBack = true; // 开启大脑停机锁
+
+        // 我们不写任何强行移动的代码了，因为动画在播，OnAnimatorMove 会根据动画把它往后退！
+        yield return new WaitForSeconds(hitAnimDuration);
+
+        isKnockedBack = false; // 挨打结束，大脑开机
+
+        if (!isDead)
         {
-            if (isDead || agent == null || !agent.isActiveAndEnabled) break;
-            agent.Move(pushDir * speed * Time.deltaTime);
-            timer += Time.deltaTime;
-            yield return null;
+            ChangeState(AIState.Chase);
         }
-        isKnockedBack = false;
     }
 }
