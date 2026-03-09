@@ -1,46 +1,38 @@
 ﻿using UnityEngine;
-using System.Collections;
+using System.Collections.Generic;
 
 public class MeleeEnemy : BaseEnemy
 {
-    [Header("=== 核心判定设置 ===")]
-    public float hitTolerance = 0.5f;
-
     [Header("=== 🚀 初见杀 (飞扑投技) 配置 ===")]
     public bool enableAmbush = true;
     public float ambushTriggerDistance = 6.0f;
-    [Tooltip("飞扑动画的总长度(秒)，播完后恢复自由")]
-    public float ambushTotalTime = 1.5f;
 
     [Header("=== 🩸 双手前抓 (常规投技) 配置 ===")]
-    public float grabHitRange = 1.5f;
     [Range(0f, 1f)] public float grabChance = 0.2f;
-    public float grabDamage = 10f;
-    [Tooltip("前抓动画的总长度(秒)")]
-    public float grabTotalTime = 1.2f;
-
-    [Space]
     public float siYaoDuration = 5.0f;
     public float detachDistance = 2.5f;
-    public float detachDuration = 0.4f; // 合并了 detachDelay，统一为后退耗时
+    public float detachDuration = 0.4f;
     public float grabSuccessEndDelay = 1.5f;
 
-    [Header("=== 常规轻/重击配置 ===")]
-    public float lightDamage = 20f;
-    [Tooltip("轻击动画的总长度(秒)")]
-    public float lightTotalTime = 1.0f;
+    [Tooltip("投技抓空后，在原地发呆喘气几秒？")]
+    public float grabFailPenaltyTime = 2.0f;
 
-    [Space]
+    [Header("=== ⚔️ 怪物攻击动作配置 (复用玩家的判定体系) ===")]
     [Range(0f, 1f)] public float heavyAttackChance = 0.3f;
-    public float heavyDamage = 40f;
-    [Tooltip("重击动画的总长度(秒)")]
-    public float heavyTotalTime = 1.5f;
 
-    private enum AttackType { Light, Heavy, Grab, Ambush }
-    private AttackType currentType = AttackType.Light;
+    public AttackAction lightAttackConfig;
+    public AttackAction heavyAttackConfig;
+    public AttackAction grabAttackConfig;
+    public AttackAction ambushAttackConfig;
 
+    private AttackAction currentAction;
     private bool hasAmbushed = false;
     private bool isGrabSuccess = false;
+
+    // 🔥 防呆锁：防止动画融合导致多次触发结束标签
+    private bool isRecovering = false;
+    // 🔥 防复读机制：防止在100%概率下无限连抓
+    private bool lastAttackWasGrab = false;
 
     protected override void UpdateChaseState()
     {
@@ -52,7 +44,7 @@ public class MeleeEnemy : BaseEnemy
                 hasAmbushed = true;
                 ChangeState(AIState.Attack);
                 isAttacking = true;
-                ExecuteAmbushGrab();
+                ExecuteAttack("FeiPu", ambushAttackConfig);
                 return;
             }
         }
@@ -62,73 +54,77 @@ public class MeleeEnemy : BaseEnemy
     protected override void PerformAttack()
     {
         isGrabSuccess = false;
+        isRecovering = false; // 出招前重置锁
+
         float roll = Random.value;
-        if (roll <= grabChance) ExecuteGrabAttack();
-        else if (Random.value <= heavyAttackChance) ExecuteHeavyAttack();
-        else ExecuteLightAttack();
+
+        // 🔥 防复读：如果上一次是投技，这次绝对不放投技 (哪怕概率是100%)
+        if (roll <= grabChance && !lastAttackWasGrab)
+        {
+            lastAttackWasGrab = true;
+            ExecuteAttack("QianZhua", grabAttackConfig);
+        }
+        else if (Random.value <= heavyAttackChance)
+        {
+            lastAttackWasGrab = false;
+            ExecuteAttack("Attack2", heavyAttackConfig);
+        }
+        else
+        {
+            lastAttackWasGrab = false;
+            ExecuteAttack("Attack", lightAttackConfig);
+        }
     }
 
-    private void ExecuteAmbushGrab()
-    {
-        currentType = AttackType.Ambush;
-        if (anim != null) anim.SetTrigger("FeiPu");
-        StartCoroutine(WaitAttackEndCoroutine(ambushTotalTime, true));
-    }
-
-    private void ExecuteGrabAttack()
-    {
-        currentType = AttackType.Grab;
-        if (anim != null) anim.SetTrigger("QianZhua");
-        StartCoroutine(WaitAttackEndCoroutine(grabTotalTime, true));
-    }
-
-    private void ExecuteHeavyAttack()
-    {
-        currentType = AttackType.Heavy;
-        if (anim != null) anim.SetTrigger("Attack2");
-        StartCoroutine(WaitAttackEndCoroutine(heavyTotalTime, false));
-    }
-
-    private void ExecuteLightAttack()
-    {
-        currentType = AttackType.Light;
-        if (anim != null) anim.SetTrigger("Attack");
-        StartCoroutine(WaitAttackEndCoroutine(lightTotalTime, false));
-    }
-
-    // 🔥 终极形态：它现在只是一个单纯的“等动画播完”的计时器，但加上了方向锁！
-    IEnumerator WaitAttackEndCoroutine(float totalTime, bool isGrabType)
+    private void ExecuteAttack(string triggerName, AttackAction actionConfig)
     {
         if (agent != null && agent.isActiveAndEnabled) agent.velocity = Vector3.zero;
 
-        // 🌟 核心修复：攻击一旦开始，立刻锁死怪物的方向！
-        // 这样它的 Root Motion 冲刺就是一条完美的直线，再也不会在半空画弯路了！
+        currentAction = actionConfig;
         isRotationLocked = true;
 
-        // 直接等待整个动画播完
-        yield return new WaitForSeconds(totalTime);
+        if (anim != null) anim.SetTrigger(triggerName);
+    }
 
-        if (isDead) yield break;
-        if (isGrabType && isGrabSuccess) yield break;
+    // ==========================================
+    // 🎭 动画事件接收区
+    // ==========================================
 
-        // BaseEnemy 里的 OnAttackAnimEnd() 会自动把 isRotationLocked 恢复为 false，所以不用担心它以后一直瞎眼
-        OnAttackAnimEnd();
+    public void DealDamage()
+    {
+        if (player == null || isDead || currentAction == null) return;
+
+        List<Collider> hits = currentAction.GetHitTargets(transform);
+
+        foreach (var hit in hits)
+        {
+            if (hit.CompareTag("Player"))
+            {
+                IDamageable target = hit.GetComponent<IDamageable>();
+                if (target != null)
+                {
+                    target.TakeDamage(currentAction.damageMultiplier);
+
+                    if (currentAction.hitVFX != null)
+                        Instantiate(currentAction.hitVFX, hit.transform.position + Vector3.up, Quaternion.identity);
+                }
+            }
+        }
     }
 
     public void TryGrab()
     {
-        if (player == null || isDead || isGrabSuccess) return;
+        if (player == null || isDead || isGrabSuccess || currentAction == null) return;
 
-        if (anim != null)
-        {
-            anim.ResetTrigger("GrabSuccess");
-            anim.ResetTrigger("GrabFail");
-        }
+        if (anim != null) anim.ResetTrigger("GrabSuccess");
 
-        float distance = Vector3.Distance(transform.position, player.position);
-        if (distance <= grabHitRange + hitTolerance)
+        List<Collider> hits = currentAction.GetHitTargets(transform);
+        bool caughtPlayer = hits.Exists(c => c.CompareTag("Player"));
+
+        if (caughtPlayer)
         {
             isGrabSuccess = true;
+
             if (agent != null) agent.isStopped = true;
             if (anim != null) anim.SetTrigger("GrabSuccess");
 
@@ -137,20 +133,74 @@ public class MeleeEnemy : BaseEnemy
 
             StartCoroutine(SiYaoCoroutine());
         }
-        else
-        {
-            if (anim != null) anim.SetTrigger("GrabFail");
-        }
+        // 💡 删除了 isGrabMissed，不再依赖完美触发 TryGrab！
     }
 
-    IEnumerator SiYaoCoroutine()
+    public void AnimEvent_AttackEnd()
+    {
+        if (isDead) return;
+        if (isGrabSuccess) return;
+        if (isRecovering) return; // 防止重复触发
+
+        // 🌟 终极神级防呆判断：只要当前放的是投技（或飞扑），且没成功，100%强制罚站！
+        // 这样即使您在动画里忘记打 TryGrab 标签，它也绝对会罚站！
+        bool wasGrabAttack = (currentAction == grabAttackConfig || currentAction == ambushAttackConfig);
+
+        if (wasGrabAttack)
+        {
+            StartCoroutine(GrabMissRecoveryRoutine());
+            return;
+        }
+
+        OnAttackAnimEnd();
+    }
+
+    // 🌟 重写受伤打断：防止协程被 BaseEnemy 掐死后，状态锁死变成木桩
+    public override void OnHitInterrupt()
+    {
+        base.OnHitInterrupt(); //
+        isRecovering = false;
+        lastAttackWasGrab = false; // 挨打后清空复读记忆
+    }
+
+    // ==========================================
+    // ⏳ 协程逻辑区
+    // ==========================================
+
+    System.Collections.IEnumerator GrabMissRecoveryRoutine()
+    {
+        isRecovering = true;  // 上锁！
+
+        // 发呆期间，强行拉起手刹并清空速度
+        if (agent != null && agent.isActiveAndEnabled)
+        {
+            agent.velocity = Vector3.zero;
+            agent.isStopped = true;
+        }
+
+        // 解除方向锁定，让它发呆时能跟着玩家转头
+        isRotationLocked = false;
+
+        float waitTime = Mathf.Max(0.1f, grabFailPenaltyTime);
+        yield return new WaitForSeconds(waitTime);
+
+        if (isDead) yield break;
+
+        // 罚站结束，解锁
+        isRecovering = false;
+
+        // 跳过绕圈直接追击
+        skipTacticalThisTime = true;
+        OnAttackAnimEnd();
+    }
+
+    System.Collections.IEnumerator SiYaoCoroutine()
     {
         yield return new WaitForSeconds(siYaoDuration);
         if (isDead) yield break;
 
         if (anim != null) anim.SetTrigger("ZhengTuo");
 
-        // 🔥 脱离后倒滑 (代码强推)
         isCodeMoving = true;
 
         float speed = detachDistance / detachDuration;
@@ -163,7 +213,7 @@ public class MeleeEnemy : BaseEnemy
             yield return null;
         }
 
-        isCodeMoving = false; // 🔥 倒滑结束，归还权限给动画
+        isCodeMoving = false;
 
         if (grabSuccessEndDelay > 0) yield return new WaitForSeconds(grabSuccessEndDelay);
         if (isDead) yield break;
@@ -171,28 +221,49 @@ public class MeleeEnemy : BaseEnemy
         OnAttackAnimEnd();
     }
 
-    public void DealDamage()
+    // ==========================================
+    // 🎨 Scene 窗口可视化辅助线
+    // ==========================================
+#if UNITY_EDITOR
+    private void OnDrawGizmosSelected()
     {
-        if (player == null || isDead) return;
-        float distance = Vector3.Distance(transform.position, player.position);
-        bool isGrabType = (currentType == AttackType.Grab || currentType == AttackType.Ambush);
-        float currentHitRange = isGrabType ? 5.0f : attackRange;
+        DrawActionGizmo(lightAttackConfig, Color.yellow);
+        DrawActionGizmo(heavyAttackConfig, Color.red);
+        DrawActionGizmo(grabAttackConfig, Color.magenta);
+        DrawActionGizmo(ambushAttackConfig, Color.cyan);
+    }
 
-        if (distance <= currentHitRange + hitTolerance)
+    private void DrawActionGizmo(AttackAction action, Color drawColor)
+    {
+        if (action == null) return;
+        Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.8f);
+
+        switch (action.shapeType)
         {
-            IDamageable target = player.GetComponent<IDamageable>();
-            if (target != null)
-            {
-                float finalDamage = 0;
-                switch (currentType)
-                {
-                    case AttackType.Light: finalDamage = lightDamage; break;
-                    case AttackType.Heavy: finalDamage = heavyDamage; break;
-                    case AttackType.Grab:
-                    case AttackType.Ambush: finalDamage = grabDamage; break;
-                }
-                target.TakeDamage(finalDamage);
-            }
+            case HitShape.Circle:
+                Gizmos.DrawWireSphere(transform.position, action.attackRadius);
+                break;
+
+            case HitShape.Sector:
+                Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.2f);
+                Gizmos.DrawWireSphere(transform.position, action.attackRadius);
+
+                Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.8f);
+                Vector3 forward = transform.forward;
+                Vector3 leftRay = Quaternion.AngleAxis(-action.attackAngle * 0.5f, Vector3.up) * forward;
+                Vector3 rightRay = Quaternion.AngleAxis(action.attackAngle * 0.5f, Vector3.up) * forward;
+
+                Gizmos.DrawRay(transform.position + Vector3.up * 0.1f, leftRay * action.attackRadius);
+                Gizmos.DrawRay(transform.position + Vector3.up * 0.1f, rightRay * action.attackRadius);
+                break;
+
+            case HitShape.Rectangle:
+                Matrix4x4 oldMatrix = Gizmos.matrix;
+                Gizmos.matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
+                Gizmos.DrawWireCube(new Vector3(0, 1f, action.boxSize.z * 0.5f), action.boxSize);
+                Gizmos.matrix = oldMatrix;
+                break;
         }
     }
+#endif
 }
