@@ -1,9 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-// ==========================================
-// 📦 专为怪物打造的【纯净攻击判定配置】(带可视化偏移)
-// ==========================================
 [System.Serializable]
 public class EnemyAttackConfig
 {
@@ -12,17 +9,9 @@ public class EnemyAttackConfig
 
     [Header("📐 几何判定形状")]
     public HitShape shapeType = HitShape.Sector;
-
-    [Tooltip("🔥 判定框的中心点偏移 (X:左右, Y:上下, Z:前后)")]
     public Vector3 hitOffset = new Vector3(0f, 1f, 1f);
-
-    [Tooltip("攻击半径 (适用于 圆形 和 扇形)")]
     public float attackRadius = 2.0f;
-
-    [Tooltip("扇形角度 (仅 扇形 适用)")]
     [Range(0, 360)] public float attackAngle = 90f;
-
-    [Tooltip("矩形长宽 (仅 矩形 适用)。X是宽度，Z是往前捅的长度")]
     public Vector3 boxSize = new Vector3(1.5f, 1f, 3f);
 
     [Header("✨ 表现反馈")]
@@ -67,31 +56,19 @@ public class EnemyAttackConfig
 
             if (isHit) validHits.Add(hit);
         }
-
         return validHits;
     }
 }
 
-// ==========================================
-// 🧠 基础攻击行为芯片
-// ==========================================
 [RequireComponent(typeof(EnemyBrain))]
 public class BasicAttackBehavior : MonoBehaviour
 {
     [System.Serializable]
     public class AttackSkill
     {
-        [Header("✏️ 招式名称 (如: 左手抓击)")]
         public string skillName = "普通攻击";
-
-        [Header("🎬 动画核心 (Animator里的Trigger名字)")]
         public string animTriggerName = "Attack";
-
-        [Header("⚖️ 触发权重 (填7和3就是70%和30%)")]
-        [Tooltip("数值越大，被抽中的概率越高。总和任意")]
-        public float weight = 10f; // 🔥 改成了权重！
-
-        [Header("⚔️ 伤害与判定配置")]
+        public float weight = 10f;
         public EnemyAttackConfig attackConfig;
     }
 
@@ -103,10 +80,12 @@ public class BasicAttackBehavior : MonoBehaviour
 
     private EnemyBrain brain;
     private AttackSkill currentSkill;
+    private ComboGrabBehavior grabBehavior; // 👈 引用同一物体上的投技芯片
 
     private void Awake()
     {
         brain = GetComponent<EnemyBrain>();
+        grabBehavior = GetComponent<ComboGrabBehavior>(); // 👈 获取投技组件
     }
 
     private void Update()
@@ -126,49 +105,77 @@ public class BasicAttackBehavior : MonoBehaviour
 
     private void TryStartAttack()
     {
-        if (attackSkills == null || attackSkills.Count == 0) return;
+        // 1. 先向大脑申请夺权
         if (!brain.RequestActionExecution()) return;
 
-        currentSkill = ChooseSkill();
-
+        float distanceToPlayer = Vector3.Distance(transform.position, brain.Player.position);
         brain.FaceTarget(brain.Player.position);
-        if (brain.Anim != null)
-        {
-            brain.Anim.SetTrigger(currentSkill.animTriggerName);
-        }
-    }
 
-    // 🔥 核心修改：使用你设计的“权重算法”抽招
-    private AttackSkill ChooseSkill()
-    {
-        // 1. 计算所有招式的权重总和 (比如 7 + 3 = 10)
+        // ==========================================
+        // 🎲 核心融合：普攻和投技进入同一个权重奖池进行抽卡
+        // ==========================================
         float totalWeight = 0f;
-        foreach (var skill in attackSkills)
+
+        // 判断投技现在是否可用（冷却好没、距离够没）
+        bool isGrabReady = grabBehavior != null && grabBehavior.IsReady(distanceToPlayer);
+
+        // 如果可用，把投技的权重加进池子
+        if (isGrabReady) totalWeight += grabBehavior.weight;
+
+        // 把所有普通攻击的权重加进池子
+        if (attackSkills != null)
         {
-            totalWeight += skill.weight;
+            foreach (var skill in attackSkills) totalWeight += skill.weight;
         }
 
-        // 2. 在 0 到 总和 之间掷骰子 (比如抽到了 8)
-        float randomVal = Random.Range(0f, totalWeight);
-
-        // 3. 寻找这根签落在了哪个招式的区间里
-        float currentWeight = 0f;
-        foreach (var skill in attackSkills)
+        // 防呆保护：如果没有配置任何技能，直接交还控制权
+        if (totalWeight <= 0f)
         {
-            currentWeight += skill.weight;
+            brain.FinishAction();
+            return;
+        }
+
+        // 开始摇号
+        float randomVal = Random.Range(0f, totalWeight);
+        float currentWeight = 0f;
+
+        // --- 抽卡阶段 1：先看有没有抽中投技 ---
+        if (isGrabReady)
+        {
+            currentWeight += grabBehavior.weight;
             if (randomVal <= currentWeight)
             {
-                return skill; // 抽中了！
+                currentSkill = null; // 🛡️ 极其关键：设为空，代表当前打出的不是普攻，防止后续 DealDamage 发生冲突！
+                grabBehavior.ExecuteGrab(); // 让投技芯片去接管后续动画
+                return;
             }
         }
 
-        // 兜底防错
-        return attackSkills[0];
+        // --- 抽卡阶段 2：如果没抽中投技，接着抽普攻 ---
+        if (attackSkills != null)
+        {
+            foreach (var skill in attackSkills)
+            {
+                currentWeight += skill.weight;
+                if (randomVal <= currentWeight)
+                {
+                    currentSkill = skill;
+                    if (brain.Anim != null) brain.Anim.SetTrigger(currentSkill.animTriggerName);
+                    return;
+                }
+            }
+        }
     }
 
+    // 由 Animator 中的 "DealDamage" 事件触发
     public void DealDamage()
     {
-        if (brain.Player == null || brain.currentState == EnemyBrain.BrainState.Dead || currentSkill == null || currentSkill.attackConfig == null) return;
+        // 🛡️ 完美防冲突保护：
+        // 如果上面抽中的是投技 (currentSkill 为 null)，直接跳过！
+        // 这样普攻脚本就不会错误地把普攻的伤害和特效叠加在撕咬上了。
+        if (currentSkill == null || currentSkill.attackConfig == null) return;
+
+        if (brain.Player == null || brain.currentState == EnemyBrain.BrainState.Dead) return;
 
         List<Collider> hits = currentSkill.attackConfig.GetHitTargets(transform);
         foreach (var hit in hits)
@@ -186,24 +193,26 @@ public class BasicAttackBehavior : MonoBehaviour
         }
     }
 
+    // 由 Animator 中的 "AnimEvent_AttackEnd" 事件触发
     public void AnimEvent_AttackEnd()
     {
         if (brain.currentState == EnemyBrain.BrainState.Dead) return;
 
+        // 🛡️ 终极防冲突锁：
+        // 如果 currentSkill 为 null，说明当前大脑正在执行的是【投技】！
+        // 此时绝对不能响应普通攻击的结束事件，直接无视，防止动画标签误伤！
+        if (currentSkill == null) return;
+
         brain.FinishAction(); // 1. 先把控制权还给大脑
 
-        // 🔥 2. 新增这一行：向怪物身上的所有芯片广播“我打完了”的信号！
-        SendMessage("OnAttackCompleted", SendMessageOptions.DontRequireReceiver);
+        // 2. 广播动作结束，让战术走位芯片去接管
+        brain.TriggerActionFinished();
     }
 
-    // ==========================================
-    // 🎨 Scene 窗口可视化辅助线
-    // ==========================================
 #if UNITY_EDITOR
     private void OnDrawGizmosSelected()
     {
         if (attackSkills == null) return;
-
         foreach (var skill in attackSkills)
         {
             if (skill == null || skill.attackConfig == null) continue;
@@ -214,15 +223,11 @@ public class BasicAttackBehavior : MonoBehaviour
     private void DrawActionGizmo(EnemyAttackConfig action, Color drawColor)
     {
         if (action == null) return;
-
         Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.8f);
         Vector3 realCenter = transform.position + transform.rotation * action.hitOffset;
-
         switch (action.shapeType)
         {
-            case HitShape.Circle:
-                Gizmos.DrawWireSphere(realCenter, action.attackRadius);
-                break;
+            case HitShape.Circle: Gizmos.DrawWireSphere(realCenter, action.attackRadius); break;
             case HitShape.Sector:
                 Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.2f);
                 Gizmos.DrawWireSphere(realCenter, action.attackRadius);

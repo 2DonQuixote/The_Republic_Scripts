@@ -22,24 +22,40 @@ public class TacticalMovementBehavior : MonoBehaviour
 
     private EnemyBrain brain;
     private Coroutine tacticalRoutine;
-    private bool originalRootMotion = false; // 提取为全局，方便打断时恢复
+    private bool originalRootMotion = false;
 
     private void Awake()
     {
         brain = GetComponent<EnemyBrain>();
     }
 
-    public void OnAttackCompleted()
+    // 🔥 1. 新增：脚本启用时订阅大脑的信号
+    private void Start()
+    {
+        if (brain != null)
+        {
+            brain.OnActionFinishedSignal += ExecuteTacticalMove;
+        }
+    }
+
+    // 🔥 2. 新增：脚本销毁时记得取消订阅，防止内存泄漏报错
+    private void OnDestroy()
+    {
+        if (brain != null)
+        {
+            brain.OnActionFinishedSignal -= ExecuteTacticalMove;
+        }
+    }
+
+    // 🔥 3. 核心修改：这个方法现在由事件自动触发了，可以改成 private，且无需叫特定名字
+    private void ExecuteTacticalMove()
     {
         if (brain.RequestActionExecution())
         {
             if (brain.Anim != null)
             {
-                // 瞬间挂倒挡，不经过发呆状态
                 brain.Anim.SetFloat("MoveX", 0f);
                 brain.Anim.SetFloat("MoveZ", -1f);
-
-                // 配合你的状态机名字
                 brain.Anim.CrossFadeInFixedTime("Combat_Locomotion", 0.1f);
             }
 
@@ -62,24 +78,16 @@ public class TacticalMovementBehavior : MonoBehaviour
 
         while (currentTimer < totalTime)
         {
-            // 🔥 核心打断逻辑：每一帧都在监听大脑状态！
-            // 只要大脑被大剑劈进了 Stunned(硬直) 或 Dead(死亡) 状态...
             if (brain.currentState == EnemyBrain.BrainState.Stunned || brain.currentState == EnemyBrain.BrainState.Dead)
             {
-                // 1. 立刻清零平移参数，防止受击抽搐时还在滑步
                 ResetAnimParams();
-
-                // 2. 🔥 完美收尾：把 Root Motion 物理驱动权还给动画机，防止打断后变木桩！
                 if (brain.Anim != null && useCodeMovement)
                 {
                     brain.Anim.applyRootMotion = originalRootMotion;
                 }
-
-                // 3. 彻底销毁当前战术走位，退出协程！
                 yield break;
             }
 
-            // 如果大脑不是 Stunned（比如中了毒，状态依然是 ExecutingAction），它就会无视伤害，继续帅气走位！
             brain.FaceTarget(brain.Player.position);
 
             Vector3 moveDir = Vector3.zero;
@@ -116,7 +124,6 @@ public class TacticalMovementBehavior : MonoBehaviour
             yield return null;
         }
 
-        // 正常走位结束的收尾
         ResetAnimParams();
 
         if (brain.Anim != null && useCodeMovement)

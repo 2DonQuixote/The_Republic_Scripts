@@ -64,7 +64,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
             {
                 // 普通怪：一打一个硬直，直接打断大脑
                 if (animator != null) animator.SetTrigger("Hit");
-                GetComponent<BaseEnemy>()?.OnHitInterrupt();
+                GetComponent<EnemyBrain>()?.OnHitInterrupt();
             }
         }
     }
@@ -89,7 +89,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
             if (animator != null) animator.SetTrigger("Hit");
 
             // 极其关键：打出大硬直，强行中断它的 AI 动作！
-            GetComponent<BaseEnemy>()?.OnHitInterrupt();
+            GetComponent<EnemyBrain>()?.OnHitInterrupt();
         }
         else
         {
@@ -110,7 +110,7 @@ public class EnemyHealth : MonoBehaviour, IDamageable
         isDead = true;
 
         if (myCollider != null) myCollider.enabled = false;
-        GetComponent<BaseEnemy>()?.TriggerDeath();
+        GetComponent<EnemyBrain>()?.TriggerDeath();
 
         if (animator != null)
         {

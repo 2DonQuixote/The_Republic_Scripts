@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 using UnityEngine.AI;
 using System.Collections;
+using System; // 🔥 1. 引入 System 命名空间以使用 Action
 
 /// <summary>
 /// 【组件化架构】怪物大脑：负责基础感知、最高级状态机、以及行为的调度与夺权。
@@ -29,6 +30,9 @@ public class EnemyBrain : MonoBehaviour
     public Animator Anim { get; private set; }
     public Transform Player { get; private set; }
 
+    // 🔥 2. 定义一个公共事件：当怪物的某个动作（如攻击）完全结束时广播
+    public event Action OnActionFinishedSignal;
+
     private void Awake()
     {
         Agent = GetComponent<NavMeshAgent>();
@@ -46,7 +50,7 @@ public class EnemyBrain : MonoBehaviour
             // 默认开启 Root Motion
             Agent.updatePosition = false;
 
-            // 🔥 终极防抽风修复 1：彻底关闭自动旋转，怪物的朝向100%由我们的代码(FaceTarget)决定！
+            // 终极防抽风修复 1：彻底关闭自动旋转，怪物的朝向100%由我们的代码(FaceTarget)决定！
             Agent.updateRotation = false;
         }
     }
@@ -86,8 +90,7 @@ public class EnemyBrain : MonoBehaviour
             Agent.velocity = Vector3.zero;
         }
 
-        // 🔥 核心修复：夺取控制权的瞬间，强行把混合树的残留参数归零！
-        // 这样它打完人的瞬间，混合树绝不会以为自己还要往前跑！
+        // 核心修复：夺取控制权的瞬间，强行把混合树的残留参数归零！
         if (Anim != null)
         {
             Anim.SetFloat("MoveX", 0f);
@@ -103,6 +106,12 @@ public class EnemyBrain : MonoBehaviour
         currentState = BrainState.Chase;
     }
 
+    // 🔥 3. 供其他行为芯片调用的方法：触发“动作完成”广播
+    public void TriggerActionFinished()
+    {
+        OnActionFinishedSignal?.Invoke();
+    }
+
     // ==========================================
     // 💥 核心接口：受击与死亡
     // ==========================================
@@ -114,17 +123,27 @@ public class EnemyBrain : MonoBehaviour
 
         if (Agent != null && Agent.isActiveAndEnabled)
         {
-            // 🔥 终极防前顶修复 2：挨打时也要彻底清空路线！
             Agent.ResetPath();
             Agent.velocity = Vector3.zero;
         }
 
+        // ==========================================
+        // ✅ 智能清理机制：遍历并清除所有 Trigger
+        // 不再硬编码名字，无论什么怪、什么招式，统统打断！
+        // ==========================================
         if (Anim != null)
         {
-            Anim.ResetTrigger("Attack");
-            Anim.ResetTrigger("Attack2");
-            Anim.ResetTrigger("Attack3");
-            Anim.ResetTrigger("QianZhua");
+            foreach (AnimatorControllerParameter param in Anim.parameters)
+            {
+                if (param.type == AnimatorControllerParameterType.Trigger)
+                {
+                    // 🔥 核心修改：只清除攻击类的 Trigger，绝对不能清除受击和死亡的 Trigger！
+                    if (param.name != "Hit" && param.name != "Twitch" && param.name != "Die" && param.name != "Frenzy")
+                    {
+                        Anim.ResetTrigger(param.name);
+                    }
+                }
+            }
         }
 
         StopAllCoroutines();
@@ -191,20 +210,15 @@ public class EnemyBrain : MonoBehaviour
         bool inCombat = (currentState != BrainState.Idle);
         Anim.SetBool("InCombat", inCombat);
 
-        // 如果大脑处于 Chase(追击) 状态，且确实产生了速度
         if (currentState == BrainState.Chase && Agent.velocity.magnitude > 0.1f)
         {
-            // 将全局速度转换为相对于怪物自身的局部方向
             Vector3 localVelocity = transform.InverseTransformDirection(Agent.velocity);
-
-            // 传给 Animator 的 Blend Tree
             Anim.SetFloat("MoveX", localVelocity.x / Agent.speed, 0.1f, Time.deltaTime);
             Anim.SetFloat("MoveZ", localVelocity.z / Agent.speed, 0.1f, Time.deltaTime);
             Anim.SetFloat("Speed", Agent.velocity.magnitude, 0.1f, Time.deltaTime);
         }
         else if (currentState != BrainState.ExecutingAction)
         {
-            // 发呆归零
             Anim.SetFloat("MoveX", 0f, 0.1f, Time.deltaTime);
             Anim.SetFloat("MoveZ", 0f, 0.1f, Time.deltaTime);
             Anim.SetFloat("Speed", 0f, 0.1f, Time.deltaTime);
