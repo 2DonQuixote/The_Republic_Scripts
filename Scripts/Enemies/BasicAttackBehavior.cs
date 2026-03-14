@@ -160,7 +160,15 @@ public class BasicAttackBehavior : MonoBehaviour
                 if (randomVal <= currentWeight)
                 {
                     currentSkill = skill;
-                    if (brain.Anim != null) brain.Anim.SetTrigger(currentSkill.animTriggerName);
+                    if (brain.Anim != null)
+                    {
+                        // ❌ 旧写法：瞬间生硬触发 (依赖 Animator 里的连线设置)
+                        // brain.Anim.SetTrigger(currentSkill.animTriggerName);
+
+                        // ✅ 新写法：代码强制完美融合！
+                        // 第二个参数 0.15f 就是融合时间。如果在奔跑，它会在 0.15 秒内平滑过渡到攻击！
+                        brain.Anim.CrossFadeInFixedTime(currentSkill.animTriggerName, 0.15f);
+                    }
                     return;
                 }
             }

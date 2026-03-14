@@ -1,11 +1,11 @@
 ﻿using UnityEngine;
 using UnityEngine.AI;
 using System.Collections;
-using System; // 🔥 1. 引入 System 命名空间以使用 Action
+using System;
 
 /// <summary>
 /// 【组件化架构】怪物大脑：负责基础感知、最高级状态机、以及行为的调度与夺权。
-/// 完美修复版：已禁用 Agent 自动旋转防抽风，并在交出控制权时彻底清空寻路路径！
+/// 完美修复版：增加了“根运动软墙阻挡”机制，杜绝怪物攻击时推挤玩家！
 /// </summary>
 public class EnemyBrain : MonoBehaviour
 {
@@ -20,17 +20,20 @@ public class EnemyBrain : MonoBehaviour
 
     [Header("=== 🧠 大脑基础感知配置 ===")]
     public BrainState currentState = BrainState.Idle;
-    public float detectionRange = 15f; // 玩家进入这个距离，大脑就会开始追击
+    public float detectionRange = 15f;
     public float moveSpeed = 4.5f;
 
     [Tooltip("硬直恢复时间")]
     public float stunDuration = 0.5f;
 
+    [Header("=== 🛡️ 物理防推挤设置 ===")]
+    [Tooltip("防推墙距离：当怪物距离玩家小于此值时，动画往前冲的位移将被没收！(建议1.0~1.5)")]
+    public float pushBlockDistance = 1.2f;
+
     public NavMeshAgent Agent { get; private set; }
     public Animator Anim { get; private set; }
     public Transform Player { get; private set; }
 
-    // 🔥 2. 定义一个公共事件：当怪物的某个动作（如攻击）完全结束时广播
     public event Action OnActionFinishedSignal;
 
     private void Awake()
@@ -47,11 +50,8 @@ public class EnemyBrain : MonoBehaviour
         if (Agent != null)
         {
             Agent.speed = moveSpeed;
-            // 默认开启 Root Motion
             Agent.updatePosition = false;
-
-            // 终极防抽风修复 1：彻底关闭自动旋转，怪物的朝向100%由我们的代码(FaceTarget)决定！
-            Agent.updateRotation = false;
+            Agent.updateRotation = false; // 防抽风转身
         }
     }
 
@@ -90,7 +90,6 @@ public class EnemyBrain : MonoBehaviour
             Agent.velocity = Vector3.zero;
         }
 
-        // 核心修复：夺取控制权的瞬间，强行把混合树的残留参数归零！
         if (Anim != null)
         {
             Anim.SetFloat("MoveX", 0f);
@@ -106,7 +105,6 @@ public class EnemyBrain : MonoBehaviour
         currentState = BrainState.Chase;
     }
 
-    // 🔥 3. 供其他行为芯片调用的方法：触发“动作完成”广播
     public void TriggerActionFinished()
     {
         OnActionFinishedSignal?.Invoke();
@@ -127,17 +125,12 @@ public class EnemyBrain : MonoBehaviour
             Agent.velocity = Vector3.zero;
         }
 
-        // ==========================================
-        // ✅ 智能清理机制：遍历并清除所有 Trigger
-        // 不再硬编码名字，无论什么怪、什么招式，统统打断！
-        // ==========================================
         if (Anim != null)
         {
             foreach (AnimatorControllerParameter param in Anim.parameters)
             {
                 if (param.type == AnimatorControllerParameterType.Trigger)
                 {
-                    // 🔥 核心修改：只清除攻击类的 Trigger，绝对不能清除受击和死亡的 Trigger！
                     if (param.name != "Hit" && param.name != "Twitch" && param.name != "Die" && param.name != "Frenzy")
                     {
                         Anim.ResetTrigger(param.name);
@@ -203,6 +196,16 @@ public class EnemyBrain : MonoBehaviour
         }
     }
 
+    public void FaceTargetInstantly(Vector3 targetPos)
+    {
+        Vector3 direction = (targetPos - transform.position).normalized;
+        direction.y = 0;
+        if (direction != Vector3.zero)
+        {
+            transform.rotation = Quaternion.LookRotation(direction);
+        }
+    }
+
     private void UpdateAnimatorLocomotion()
     {
         if (Anim == null || Agent == null) return;
@@ -210,7 +213,7 @@ public class EnemyBrain : MonoBehaviour
         bool inCombat = (currentState != BrainState.Idle);
         Anim.SetBool("InCombat", inCombat);
 
-        if (currentState == BrainState.Chase && Agent.velocity.magnitude > 0.1f)
+        if ((currentState == BrainState.Chase || currentState == BrainState.Idle) && Agent.velocity.magnitude > 0.1f)
         {
             Vector3 localVelocity = transform.InverseTransformDirection(Agent.velocity);
             Anim.SetFloat("MoveX", localVelocity.x / Agent.speed, 0.1f, Time.deltaTime);
@@ -225,6 +228,9 @@ public class EnemyBrain : MonoBehaviour
         }
     }
 
+    // ==========================================
+    // 🚶 动画位移接管 (Root Motion)
+    // ==========================================
     private void OnAnimatorMove()
     {
         if (Agent == null || Anim == null || currentState == BrainState.Dead) return;
@@ -233,6 +239,32 @@ public class EnemyBrain : MonoBehaviour
         {
             Vector3 animDeltaPosition = Anim.deltaPosition;
             animDeltaPosition.y = 0;
+
+            // 🔥 ==============================================
+            // 🛡️ 软墙拦截机制：如果离玩家太近，且正在往玩家脸上撞，没收位移！
+            // =================================================
+            if (Player != null)
+            {
+                float distanceToPlayer = Vector3.Distance(transform.position, Player.position);
+
+                if (distanceToPlayer <= pushBlockDistance)
+                {
+                    // 算出从怪物指向玩家的向量
+                    Vector3 dirToPlayer = (Player.position - transform.position).normalized;
+                    dirToPlayer.y = 0;
+                    dirToPlayer.Normalize();
+
+                    // 算出这一帧动画想要往玩家方向走多少
+                    float pushAmount = Vector3.Dot(animDeltaPosition, dirToPlayer);
+
+                    // 如果确实是在往前挤 (>0)，我们把这段位移从 Root Motion 里减去
+                    if (pushAmount > 0)
+                    {
+                        animDeltaPosition -= dirToPlayer * pushAmount;
+                    }
+                }
+            }
+
             transform.position += animDeltaPosition;
             Agent.nextPosition = transform.position;
         }

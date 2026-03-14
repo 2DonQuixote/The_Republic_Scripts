@@ -1,70 +1,78 @@
 ﻿using UnityEngine;
 
+/// <summary>
+/// 完美抛物线投射物：可调高度、飞行时间，自带精准制导、范围爆炸与叠毒。
+/// </summary>
 public class PoisonProjectile : MonoBehaviour
 {
-    [Header("=== 🚀 飞行配置 ===")]
-    public float speed = 10f;
-    public float arcHeight = 2.5f;
-    public float directDamage = 5f;
+    [Header("=== 🏹 抛物线飞行配置 ===")]
+    [Tooltip("飞到玩家脸上需要几秒？")]
+    public float flightDuration = 1.0f;
+    [Tooltip("抛物线最高点的高度（调大就是高抛雷，调小就是直球）")]
+    public float arcHeight = 3.0f;
 
-    [Header("=== 💥 爆炸配置 ===")]
-    [Tooltip("爆炸半径。直径 = 半径 * 2")]
-    public float explosionRadius = 3.0f; // 🔥 这里就是您要的可调直径（半径）
+    [Header("=== 💥 爆炸与基础伤害 ===")]
+    public float damage = 15f;
+    [Tooltip("爆炸的波及范围 (半径)")]
+    public float explosionRadius = 3.0f;
+    public GameObject hitVFX; // 砸中玩家或地面的爆炸特效
 
-    [Header("=== 🧪 毒性配置 ===")]
-    public BuffData poisonBuff;
-    public float buildupAmount = 40f;
+    [Header("=== 🧪 毒性附加配置 ===")]
+    public BuffData poisonBuff; // 拖入您配置好的中毒 BuffData
+    [Tooltip("炸到一次给玩家增加多少中毒积累值？")]
+    public float buildupAmount = 40f; 
 
-    [Header("=== ✨ 表现 ===")]
-    public GameObject hitVFX;
-
-    // 内部计算变量
-    private Vector3 startPos;
-    private Vector3 targetPos;
-    private float flightDuration;
-    private float flightTimer = 0f;
+    private Vector3 startPoint;
+    private Vector3 targetPoint;
+    private float elapsedTime = 0f;
     private bool isLaunched = false;
-    private bool hasExploded = false; // 防止重复触发爆炸
+    private bool hasExploded = false; // 🔥 防重复爆炸锁
 
-    public void LaunchToPoint(Vector3 target)
+    public void LaunchToPoint(Vector3 targetPosition)
     {
-        startPos = transform.position;
-        targetPos = target;
-
-        float distance = Vector3.Distance(new Vector3(startPos.x, 0, startPos.z), new Vector3(targetPos.x, 0, targetPos.z));
-        flightDuration = distance / speed;
-
+        startPoint = transform.position;
+        // 瞄准玩家的胸口/肚子（稍微往上抬一点，不至于砸脚趾头）
+        targetPoint = targetPosition + Vector3.up * 1.0f;
+        elapsedTime = 0f;
         isLaunched = true;
+        hasExploded = false;
     }
 
-    void Update()
+    private void Update()
     {
         if (!isLaunched || hasExploded) return;
 
-        flightTimer += Time.deltaTime;
-        float percent = flightTimer / flightDuration;
+        elapsedTime += Time.deltaTime;
+        float percent = elapsedTime / flightDuration; // 当前飞行进度 0.0 ~ 1.0
 
         if (percent >= 1f)
         {
-            Explode(); // 落地爆炸
+            // 飞到终点了，强制落地爆炸
+            Explode();
             return;
         }
 
-        Vector3 currentPos = Vector3.Lerp(startPos, targetPos, percent);
-        currentPos.y += arcHeight * 4f * percent * (1f - percent);
+        // 🔥 抛物线核心算法
+        Vector3 currentPos = Vector3.Lerp(startPoint, targetPoint, percent);
+        float heightModifier = Mathf.Sin(percent * Mathf.PI) * arcHeight;
+        currentPos.y += heightModifier;
 
+        // 让毒球的模型在空中顺着抛物线的弧度旋转，视觉效果更好
         Vector3 moveDir = currentPos - transform.position;
         if (moveDir != Vector3.zero) transform.rotation = Quaternion.LookRotation(moveDir);
 
         transform.position = currentPos;
     }
 
+    // 碰撞检测：如果是飞行途中撞到了墙、玩家、地面
     private void OnTriggerEnter(Collider other)
     {
-        // 忽略怪物自己和别的毒球
+        if (hasExploded) return;
+
+        // 忽略怪物自己和发射出来的其他毒球，防止刚出手就炸
         if (other.CompareTag("Enemy") || other.GetComponent<PoisonProjectile>()) return;
 
-        // 只要撞到任何非怪物的物体（墙、玩家、地面装饰），立刻引爆
+        // 碰到任何有效物体，立刻引爆！
         Explode();
     }
 
@@ -73,23 +81,25 @@ public class PoisonProjectile : MonoBehaviour
     {
         if (hasExploded) return;
         hasExploded = true;
+        isLaunched = false;
 
         // 1. 范围检测：找出爆炸半径内所有的碰撞体
         Collider[] hits = Physics.OverlapSphere(transform.position, explosionRadius);
 
         foreach (var hit in hits)
         {
-            // 🛡️ 依然遵守之前的规则：爆炸不伤队友（Enemy 标签）
+            // 如果不想炸伤别的怪物队友，跳过他们
             if (hit.CompareTag("Enemy")) continue;
 
-            // 2. 对范围内所有带 IDamageable 的物体造成伤害
+            // 2. 造成基础伤害并触发受击硬直
             IDamageable targetHealth = hit.GetComponent<IDamageable>();
             if (targetHealth != null)
             {
-                targetHealth.TakeDamage(directDamage);
+                // true 代表被炸到会出硬直
+                targetHealth.TakeDamage(damage, true);
             }
 
-            // 3. 对范围内所有带 StatusManager 的物体叠毒
+            // 3. 附加中毒积累值 (接入您的 StatusManager 体系)
             StatusManager statusMgr = hit.GetComponent<StatusManager>();
             if (statusMgr != null && poisonBuff != null)
             {
@@ -97,24 +107,22 @@ public class PoisonProjectile : MonoBehaviour
             }
         }
 
-        // 4. 生成爆炸特效
+        // 4. 生成爆炸/毒雾特效
         if (hitVFX != null)
         {
-            GameObject vfx = Instantiate(hitVFX, transform.position, Quaternion.identity);
-            // 💡 进阶小贴士：如果您的特效本身支持缩放，可以根据半径动态调整特效大小
-            // vfx.transform.localScale = Vector3.one * (explosionRadius / 3f);
+            Instantiate(hitVFX, transform.position, Quaternion.identity);
         }
 
-        // 5. 销毁自己
+        // 5. 销毁毒球本体
         Destroy(gameObject);
     }
 
     // 🛠️ 辅助线：在 Scene 窗口里画出爆炸范围，方便您调试
     private void OnDrawGizmosSelected()
     {
-        Gizmos.color = new Color(0, 1, 0, 0.3f);
+        Gizmos.color = new Color(0, 1, 0, 0.3f); // 半透明绿色球体
         Gizmos.DrawSphere(transform.position, explosionRadius);
-        Gizmos.color = Color.green;
+        Gizmos.color = Color.green; // 绿色边缘线
         Gizmos.DrawWireSphere(transform.position, explosionRadius);
     }
 }
