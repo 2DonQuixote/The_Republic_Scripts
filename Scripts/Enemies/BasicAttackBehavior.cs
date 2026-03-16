@@ -21,14 +21,12 @@ public class EnemyAttackConfig
     {
         List<Collider> validHits = new List<Collider>();
         Vector3 realCenter = attacker.position + attacker.rotation * hitOffset;
-
         float maxRange = shapeType == HitShape.Rectangle ? Mathf.Max(boxSize.x, boxSize.z) : attackRadius;
         Collider[] potentialHits = Physics.OverlapSphere(realCenter, maxRange);
 
         foreach (var hit in potentialHits)
         {
             if (hit.gameObject == attacker.gameObject) continue;
-
             Vector3 dirToTarget = hit.transform.position - realCenter;
             dirToTarget.y = 0;
             bool isHit = false;
@@ -53,11 +51,28 @@ public class EnemyAttackConfig
                     }
                     break;
             }
-
             if (isHit) validHits.Add(hit);
         }
         return validHits;
     }
+}
+
+// 🔥 连招派生分支
+[System.Serializable]
+public class ComboBranch
+{
+    public string branchName = "派生招式";
+    [Tooltip("Animator里动画节点的名字")]
+    public string animStateName = "Attack2";
+
+    [Header("触发条件")]
+    [Range(0f, 1f)] public float triggerChance = 0.5f;
+
+    public bool useHealthThreshold = false;
+    [Range(0f, 1f)] public float maxHealthThreshold = 0.5f;
+
+    [Header("派生招式的独立判定")]
+    public EnemyAttackConfig attackConfig;
 }
 
 [RequireComponent(typeof(EnemyBrain))]
@@ -67,25 +82,39 @@ public class BasicAttackBehavior : MonoBehaviour
     public class AttackSkill
     {
         public string skillName = "普通攻击";
-        public string animTriggerName = "Attack";
+        [Tooltip("Animator里动画节点的名字")]
+        public string animStateName = "Attack1";
         public float weight = 10f;
+
+        [Header("=== 🩸 阶段解锁 (二阶段专用) ===")]
+        public bool useHealthThreshold = false;
+        [Range(0f, 1f)] public float maxHealthThreshold = 0.5f;
+
+        [Header("=== ⚔️ 基础判定与派生连招 ===")]
         public EnemyAttackConfig attackConfig;
+        public List<ComboBranch> comboBranches = new List<ComboBranch>();
     }
 
     [Header("=== 📏 触发距离 ===")]
     public float attackRange = 2.0f;
 
-    [Header("=== 📜 招式列表 ===")]
+    [Header("=== 📜 招式卡池 ===")]
     public List<AttackSkill> attackSkills = new List<AttackSkill>();
 
     private EnemyBrain brain;
+    private ComboGrabBehavior grabBehavior;
+    private EnemyHealth myHealth;
+
     private AttackSkill currentSkill;
-    private ComboGrabBehavior grabBehavior; // 👈 引用同一物体上的投技芯片
+    private EnemyAttackConfig currentActiveHitbox;
+
+    private float CurrentHpPercent => myHealth != null ? myHealth.GetCurrentHealthPercent() : 1f;
 
     private void Awake()
     {
         brain = GetComponent<EnemyBrain>();
-        grabBehavior = GetComponent<ComboGrabBehavior>(); // 👈 获取投技组件
+        grabBehavior = GetComponent<ComboGrabBehavior>();
+        myHealth = GetComponent<EnemyHealth>();
     }
 
     private void Update()
@@ -94,9 +123,7 @@ public class BasicAttackBehavior : MonoBehaviour
 
         if (brain.currentState == EnemyBrain.BrainState.Chase)
         {
-            float distanceToPlayer = Vector3.Distance(transform.position, brain.Player.position);
-
-            if (distanceToPlayer <= attackRange)
+            if (Vector3.Distance(transform.position, brain.Player.position) <= attackRange)
             {
                 TryStartAttack();
             }
@@ -105,87 +132,70 @@ public class BasicAttackBehavior : MonoBehaviour
 
     private void TryStartAttack()
     {
-        // 1. 先向大脑申请夺权
         if (!brain.RequestActionExecution()) return;
 
-        float distanceToPlayer = Vector3.Distance(transform.position, brain.Player.position);
         brain.FaceTarget(brain.Player.position);
+        float distanceToPlayer = Vector3.Distance(transform.position, brain.Player.position);
 
-        // ==========================================
-        // 🎲 核心融合：普攻和投技进入同一个权重奖池进行抽卡
-        // ==========================================
         float totalWeight = 0f;
+        List<AttackSkill> availableSkills = new List<AttackSkill>();
+        float currentHp = CurrentHpPercent;
 
-        // 判断投技现在是否可用（冷却好没、距离够没）
-        bool isGrabReady = grabBehavior != null && grabBehavior.IsReady(distanceToPlayer);
-
-        // 如果可用，把投技的权重加进池子
-        if (isGrabReady) totalWeight += grabBehavior.weight;
-
-        // 把所有普通攻击的权重加进池子
-        if (attackSkills != null)
+        foreach (var skill in attackSkills)
         {
-            foreach (var skill in attackSkills) totalWeight += skill.weight;
+            if (skill.useHealthThreshold && currentHp > skill.maxHealthThreshold) continue;
+            availableSkills.Add(skill);
+            totalWeight += skill.weight;
         }
 
-        // 防呆保护：如果没有配置任何技能，直接交还控制权
+        bool isGrabReady = grabBehavior != null && grabBehavior.IsReady(distanceToPlayer);
+        if (isGrabReady) totalWeight += grabBehavior.weight;
+
         if (totalWeight <= 0f)
         {
             brain.FinishAction();
             return;
         }
 
-        // 开始摇号
         float randomVal = Random.Range(0f, totalWeight);
         float currentWeight = 0f;
 
-        // --- 抽卡阶段 1：先看有没有抽中投技 ---
         if (isGrabReady)
         {
             currentWeight += grabBehavior.weight;
             if (randomVal <= currentWeight)
             {
-                currentSkill = null; // 🛡️ 极其关键：设为空，代表当前打出的不是普攻，防止后续 DealDamage 发生冲突！
-                grabBehavior.ExecuteGrab(); // 让投技芯片去接管后续动画
+                currentSkill = null;
+                currentActiveHitbox = null;
+                grabBehavior.ExecuteGrab();
                 return;
             }
         }
 
-        // --- 抽卡阶段 2：如果没抽中投技，接着抽普攻 ---
-        if (attackSkills != null)
+        foreach (var skill in availableSkills)
         {
-            foreach (var skill in attackSkills)
+            currentWeight += skill.weight;
+            if (randomVal <= currentWeight)
             {
-                currentWeight += skill.weight;
-                if (randomVal <= currentWeight)
-                {
-                    currentSkill = skill;
-                    if (brain.Anim != null)
-                    {
-                        // ❌ 旧写法：瞬间生硬触发 (依赖 Animator 里的连线设置)
-                        // brain.Anim.SetTrigger(currentSkill.animTriggerName);
+                currentSkill = skill;
+                currentActiveHitbox = skill.attackConfig;
 
-                        // ✅ 新写法：代码强制完美融合！
-                        // 第二个参数 0.15f 就是融合时间。如果在奔跑，它会在 0.15 秒内平滑过渡到攻击！
-                        brain.Anim.CrossFadeInFixedTime(currentSkill.animTriggerName, 0.15f);
-                    }
-                    return;
+                if (brain.Anim != null)
+                {
+                    // 恢复 CrossFadeInFixedTime，这是不会卡死大脑的做法！
+                    brain.Anim.CrossFadeInFixedTime(currentSkill.animStateName, 0.15f);
                 }
+                return;
             }
         }
     }
 
-    // 由 Animator 中的 "DealDamage" 事件触发
+    // 💥【关键事件1】在动画中武器击中玩家的瞬间打上：DealDamage
     public void DealDamage()
     {
-        // 🛡️ 完美防冲突保护：
-        // 如果上面抽中的是投技 (currentSkill 为 null)，直接跳过！
-        // 这样普攻脚本就不会错误地把普攻的伤害和特效叠加在撕咬上了。
-        if (currentSkill == null || currentSkill.attackConfig == null) return;
+        if (currentActiveHitbox == null || brain.Player == null || brain.currentState == EnemyBrain.BrainState.Dead) return;
 
-        if (brain.Player == null || brain.currentState == EnemyBrain.BrainState.Dead) return;
-
-        List<Collider> hits = currentSkill.attackConfig.GetHitTargets(transform);
+        List<Collider> hits = currentActiveHitbox.GetHitTargets(transform);
         foreach (var hit in hits)
         {
             if (hit.CompareTag("Player"))
@@ -193,27 +203,62 @@ public class BasicAttackBehavior : MonoBehaviour
                 IDamageable target = hit.GetComponent<IDamageable>();
                 if (target != null)
                 {
-                    target.TakeDamage(currentSkill.attackConfig.damageMultiplier);
-                    if (currentSkill.attackConfig.hitVFX != null)
-                        Instantiate(currentSkill.attackConfig.hitVFX, hit.transform.position + Vector3.up, Quaternion.identity);
+                    target.TakeDamage(currentActiveHitbox.damageMultiplier);
+                    if (currentActiveHitbox.hitVFX != null)
+                        Instantiate(currentActiveHitbox.hitVFX, hit.transform.position + Vector3.up, Quaternion.identity);
                 }
             }
         }
     }
 
-    // 由 Animator 中的 "AnimEvent_AttackEnd" 事件触发
+    // 🔄【关键事件2】在动画后摇阶段打上：AnimEvent_ComboCheck
+    public void AnimEvent_ComboCheck()
+    {
+        if (brain.currentState == EnemyBrain.BrainState.Dead || currentSkill == null) return;
+        if (currentSkill.comboBranches == null || currentSkill.comboBranches.Count == 0) return;
+
+        float currentHp = CurrentHpPercent;
+
+        foreach (var branch in currentSkill.comboBranches)
+        {
+            if (branch.useHealthThreshold && currentHp > branch.maxHealthThreshold) continue;
+
+            if (Random.value <= branch.triggerChance)
+            {
+                currentActiveHitbox = branch.attackConfig;
+                brain.FaceTargetInstantly(brain.Player.position);
+
+                if (brain.Anim != null)
+                {
+                    // 连招也恢复 CrossFadeInFixedTime
+                    brain.Anim.CrossFadeInFixedTime(branch.animStateName, 0.15f);
+                }
+                return;
+            }
+        }
+    }
+
+    // 🛑【关键事件3】在动画最后一帧打上：AnimEvent_AttackEnd
     public void AnimEvent_AttackEnd()
     {
         if (brain.currentState == EnemyBrain.BrainState.Dead) return;
-
-        // 🛡️ 终极防冲突锁：
-        // 如果 currentSkill 为 null，说明当前大脑正在执行的是【投技】！
-        // 此时绝对不能响应普通攻击的结束事件，直接无视，防止动画标签误伤！
         if (currentSkill == null) return;
 
-        brain.FinishAction(); // 1. 先把控制权还给大脑
+        // 1. 攻击打完了，先归还大脑控制权
+        brain.FinishAction();
 
-        // 2. 广播动作结束，让战术走位芯片去接管
+        // 2. 尝试寻找战术撤退芯片
+        TacticalRetreatBehavior retreatBehavior = GetComponent<TacticalRetreatBehavior>();
+        if (retreatBehavior != null)
+        {
+            // 如果撤退芯片接管了身体，就直接返回，不触发后续逻辑
+            if (retreatBehavior.TryStartRetreat())
+            {
+                return;
+            }
+        }
+
+        // 3. 如果没有撤退芯片，或者没摇中撤退概率，正常结束回合
         brain.TriggerActionFinished();
     }
 
@@ -223,8 +268,16 @@ public class BasicAttackBehavior : MonoBehaviour
         if (attackSkills == null) return;
         foreach (var skill in attackSkills)
         {
-            if (skill == null || skill.attackConfig == null) continue;
-            DrawActionGizmo(skill.attackConfig, Color.red);
+            if (skill == null) continue;
+            if (skill.attackConfig != null) DrawActionGizmo(skill.attackConfig, Color.red);
+            if (skill.comboBranches != null)
+            {
+                foreach (var branch in skill.comboBranches)
+                {
+                    if (branch != null && branch.attackConfig != null)
+                        DrawActionGizmo(branch.attackConfig, new Color(1f, 0.5f, 0f));
+                }
+            }
         }
     }
 
@@ -233,6 +286,7 @@ public class BasicAttackBehavior : MonoBehaviour
         if (action == null) return;
         Gizmos.color = new Color(drawColor.r, drawColor.g, drawColor.b, 0.8f);
         Vector3 realCenter = transform.position + transform.rotation * action.hitOffset;
+
         switch (action.shapeType)
         {
             case HitShape.Circle: Gizmos.DrawWireSphere(realCenter, action.attackRadius); break;

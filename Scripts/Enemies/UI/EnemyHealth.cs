@@ -131,4 +131,11 @@ public class EnemyHealth : MonoBehaviour, IDamageable
             foreach (var r in allRenderers) r.enabled = isActive;
         }
     }
+
+    public float GetCurrentHealthPercent()
+    {
+        if (maxHealth <= 0) return 0;
+        return currentHealth / maxHealth;
+    }
+
 }
