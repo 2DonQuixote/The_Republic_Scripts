@@ -6,24 +6,23 @@ public class TacticalRetreatBehavior : MonoBehaviour
     [System.Serializable]
     public class RetreatConfig
     {
-        [Header("🏃 撤退动画")]
-        [Tooltip("Animator中普通后撤步的节点名称")]
-        public string retreatAnimState = "MoveBackward";
+        [Header("⏱️ 撤退时间控制")]
+        public float retreatDuration = 1.2f;
 
-        [Header("🛡️ 防御参数")]
+        [Header("🏃 撤退混合树控制 (Blend Tree)")]
+        [Tooltip("控制前后移动的Float参数名（比如 MoveZ 或 MoveY）")]
+        public string moveFloatParam = "MoveZ";
+        [Tooltip("后退时该Float设为多少？（通常混合树里后退是 -1）")]
+        public float retreatFloatValue = -1f;
+
+        [Header("🛡️ 防御参数 (HitReaction Layer)")]
         [Range(0f, 1f)]
-        [Tooltip("撤退时举盾/防御的概率")]
         public float defendChance = 0.4f;
-        [Tooltip("触发防御时播放的动画节点名称(比如举盾后退)")]
-        public string defendRetreatAnimState = "DefendBackward";
-
-        [Tooltip("如果用Bool控制减伤，填在这里")]
         public string defendBoolName = "IsDefending";
     }
 
     [Header("=== 🎲 触发概率 ===")]
     [Range(0f, 1f)]
-    [Tooltip("打完一套攻击后，有多大概率执行撤退？(1为必定撤退)")]
     public float retreatChance = 1.0f;
 
     [Header("=== 🟢 一阶段配置 (默认) ===")]
@@ -37,8 +36,12 @@ public class TacticalRetreatBehavior : MonoBehaviour
     private EnemyBrain brain;
     private EnemyHealth myHealth;
 
-    // 缓存当前使用的防御Bool名字，方便结束时关闭
     private string currentActiveDefendBool = "";
+    private RetreatConfig currentActiveConfig;
+
+    // 用于在 Update 里控制时间的两个变量
+    private bool isRetreating = false;
+    private float retreatTimer = 0f;
 
     private float CurrentHpPercent => myHealth != null ? myHealth.GetCurrentHealthPercent() : 1f;
 
@@ -48,62 +51,93 @@ public class TacticalRetreatBehavior : MonoBehaviour
         myHealth = GetComponent<EnemyHealth>();
     }
 
-    // 由 BasicAttackBehavior 在攻击结束时调用
-    public bool TryStartRetreat()
+    // 核心逻辑：每一帧给混合树发送 -1，让怪物持续向后迈步
+    private void Update()
     {
-        if (brain.currentState == EnemyBrain.BrainState.Dead) return false;
+        if (!isRetreating) return;
 
-        // 掷骰子：是否触发撤退
-        if (Random.value > retreatChance) return false;
-
-        // 向大脑申请执行动作（接管身体）
-        if (!brain.RequestActionExecution()) return false;
-
-        // 1. 判断阶段
-        RetreatConfig activeConfig = phase1Config;
-        if (useHealthThreshold && CurrentHpPercent <= healthThreshold)
+        if (brain.currentState == EnemyBrain.BrainState.Dead)
         {
-            activeConfig = phase2Config;
+            isRetreating = false;
+            return;
         }
 
-        // 2. 掷骰子：本次撤退是否防御
-        bool isDefending = Random.value <= activeConfig.defendChance;
-        string animToPlay = isDefending ? activeConfig.defendRetreatAnimState : activeConfig.retreatAnimState;
-
-        // 3. 播放动画，并开启防御机制
-        if (brain.Anim != null)
-        {
-            brain.Anim.CrossFadeInFixedTime(animToPlay, 0.15f);
-
-            if (isDefending && !string.IsNullOrEmpty(activeConfig.defendBoolName))
-            {
-                brain.Anim.SetBool(activeConfig.defendBoolName, true);
-                currentActiveDefendBool = activeConfig.defendBoolName;
-            }
-        }
-
-        // 强制对准玩家，防止背对玩家后退
+        // 保持面朝玩家
         if (brain.Player != null)
         {
             brain.FaceTargetInstantly(brain.Player.position);
         }
 
-        return true; // 成功接管
-    }
-
-    // 🛑【关键事件】必须在撤退动画的最后几帧打上这个动画事件！
-    public void AnimEvent_RetreatEnd()
-    {
-        if (brain.currentState == EnemyBrain.BrainState.Dead) return;
-
-        // 撤退结束，关闭防御Bool
-        if (!string.IsNullOrEmpty(currentActiveDefendBool) && brain.Anim != null)
+        // 🎯 【精髓就在这里】每帧持续赋值，驱动下半身后退动画！
+        if (brain.Anim != null && currentActiveConfig != null)
         {
-            brain.Anim.SetBool(currentActiveDefendBool, false);
-            currentActiveDefendBool = "";
+            // 添加一点平滑缓冲（0.1f），让动作不会过于僵硬
+            brain.Anim.SetFloat(currentActiveConfig.moveFloatParam, currentActiveConfig.retreatFloatValue, 0.1f, Time.deltaTime);
         }
 
-        // 归还控制权给大脑，让怪物继续追击或发呆
+        // 倒计时
+        retreatTimer -= Time.deltaTime;
+
+        if (retreatTimer <= 0f)
+        {
+            EndRetreat();
+        }
+    }
+
+    public bool TryStartRetreat()
+    {
+        if (brain.currentState == EnemyBrain.BrainState.Dead) return false;
+        if (isRetreating) return false;
+        if (Random.value > retreatChance) return false;
+        if (!brain.RequestActionExecution()) return false;
+
+        currentActiveConfig = phase1Config;
+        if (useHealthThreshold && CurrentHpPercent <= healthThreshold)
+        {
+            currentActiveConfig = phase2Config;
+        }
+
+        bool isDefending = Random.value <= currentActiveConfig.defendChance;
+
+        if (brain.Anim != null)
+        {
+            // 【重要】不再使用 CrossFade，彻底抛弃节点播放！
+
+            // 如果随到了防御，呼叫上半身覆盖动作
+            if (isDefending && !string.IsNullOrEmpty(currentActiveConfig.defendBoolName))
+            {
+                brain.Anim.SetBool(currentActiveConfig.defendBoolName, true);
+                currentActiveDefendBool = currentActiveConfig.defendBoolName;
+            }
+        }
+
+        retreatTimer = currentActiveConfig.retreatDuration;
+        isRetreating = true;
+
+        return true;
+    }
+
+    private void EndRetreat()
+    {
+        isRetreating = false;
+
+        if (brain.Anim != null)
+        {
+            // 1. 关闭防御
+            if (!string.IsNullOrEmpty(currentActiveDefendBool))
+            {
+                brain.Anim.SetBool(currentActiveDefendBool, false);
+                currentActiveDefendBool = "";
+            }
+
+            // 2. 🎯 【关键收尾】撤退结束，把混合树的后退 Float 归零，停下脚步！
+            if (currentActiveConfig != null)
+            {
+                brain.Anim.SetFloat(currentActiveConfig.moveFloatParam, 0f);
+            }
+        }
+
+        // 3. 解锁大脑
         brain.FinishAction();
         brain.TriggerActionFinished();
     }
