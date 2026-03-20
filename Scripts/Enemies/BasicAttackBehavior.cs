@@ -102,7 +102,8 @@ public class BasicAttackBehavior : MonoBehaviour
     public List<AttackSkill> attackSkills = new List<AttackSkill>();
 
     private EnemyBrain brain;
-    private ComboGrabBehavior grabBehavior;
+    // 🔥 将之前的 ComboGrabBehavior 替换为全新的 BiteGrabBehavior 芯片
+    private BiteGrabBehavior biteGrabBehavior;
     private EnemyHealth myHealth;
 
     private AttackSkill currentSkill;
@@ -113,7 +114,7 @@ public class BasicAttackBehavior : MonoBehaviour
     private void Awake()
     {
         brain = GetComponent<EnemyBrain>();
-        grabBehavior = GetComponent<ComboGrabBehavior>();
+        biteGrabBehavior = GetComponent<BiteGrabBehavior>();
         myHealth = GetComponent<EnemyHealth>();
     }
 
@@ -141,6 +142,7 @@ public class BasicAttackBehavior : MonoBehaviour
         List<AttackSkill> availableSkills = new List<AttackSkill>();
         float currentHp = CurrentHpPercent;
 
+        // 1. 收集满足条件的普通攻击
         foreach (var skill in attackSkills)
         {
             if (skill.useHealthThreshold && currentHp > skill.maxHealthThreshold) continue;
@@ -148,8 +150,9 @@ public class BasicAttackBehavior : MonoBehaviour
             totalWeight += skill.weight;
         }
 
-        bool isGrabReady = grabBehavior != null && grabBehavior.IsReady(distanceToPlayer);
-        if (isGrabReady) totalWeight += grabBehavior.weight;
+        // 2. 检查撕咬投技是否就绪，如果就绪，将其权重加入总池子
+        bool isBiteReady = biteGrabBehavior != null && biteGrabBehavior.IsReady(distanceToPlayer);
+        if (isBiteReady) totalWeight += biteGrabBehavior.weight;
 
         if (totalWeight <= 0f)
         {
@@ -157,21 +160,24 @@ public class BasicAttackBehavior : MonoBehaviour
             return;
         }
 
+        // 3. 开始转盘抽奖
         float randomVal = Random.Range(0f, totalWeight);
         float currentWeight = 0f;
 
-        if (isGrabReady)
+        // 先判断是不是抽中了撕咬
+        if (isBiteReady)
         {
-            currentWeight += grabBehavior.weight;
+            currentWeight += biteGrabBehavior.weight;
             if (randomVal <= currentWeight)
             {
                 currentSkill = null;
                 currentActiveHitbox = null;
-                grabBehavior.ExecuteGrab();
+                biteGrabBehavior.ExecuteGrab(); // 呼叫投技芯片去执行！
                 return;
             }
         }
 
+        // 没抽中撕咬，则从普通攻击里选
         foreach (var skill in availableSkills)
         {
             currentWeight += skill.weight;

@@ -5,7 +5,7 @@ using System;
 
 /// <summary>
 /// 【组件化架构】怪物大脑：负责基础感知、最高级状态机、以及行为的调度与夺权。
-/// 完美修复版：增加了“根运动软墙阻挡”机制，杜绝怪物攻击时推挤玩家！
+/// 完美修复版：增加了“根运动软墙阻挡”机制，以及“非对称动画丝滑过渡”！
 /// </summary>
 public class EnemyBrain : MonoBehaviour
 {
@@ -29,6 +29,14 @@ public class EnemyBrain : MonoBehaviour
     [Header("=== 🛡️ 物理防推挤设置 ===")]
     [Tooltip("防推墙距离：当怪物距离玩家小于此值时，动画往前冲的位移将被没收！(建议1.0~1.5)")]
     public float pushBlockDistance = 1.2f;
+
+    // 🔥 核心修改：非对称的丝滑过渡配置
+    [Header("=== 🏃 动画丝滑过渡设置 (非对称) ===")]
+    [Tooltip("往前跑(追击)的渐变缓冲时间。数值越大，起步越慢、越有重量感。(建议0.3~0.4)")]
+    [Range(0.01f, 1f)] public float forwardDampTime = 0.3f;
+
+    [Tooltip("停步原地待机的渐变缓冲时间。数值越小，刹车越快。(建议0.1)")]
+    [Range(0.01f, 1f)] public float stopDampTime = 0.1f;
 
     public NavMeshAgent Agent { get; private set; }
     public Animator Anim { get; private set; }
@@ -88,12 +96,6 @@ public class EnemyBrain : MonoBehaviour
         {
             Agent.ResetPath();
             Agent.velocity = Vector3.zero;
-        }
-
-        if (Anim != null)
-        {
-            Anim.SetFloat("MoveX", 0f);
-            Anim.SetFloat("MoveZ", 0f);
         }
 
         return true;
@@ -213,18 +215,26 @@ public class EnemyBrain : MonoBehaviour
         bool inCombat = (currentState != BrainState.Idle);
         Anim.SetBool("InCombat", inCombat);
 
+        // 🔥 核心修改：起步前冲用 forwardDampTime，急刹车用 stopDampTime
         if ((currentState == BrainState.Chase || currentState == BrainState.Idle) && Agent.velocity.magnitude > 0.1f)
         {
             Vector3 localVelocity = transform.InverseTransformDirection(Agent.velocity);
-            Anim.SetFloat("MoveX", localVelocity.x / Agent.speed, 0.1f, Time.deltaTime);
-            Anim.SetFloat("MoveZ", localVelocity.z / Agent.speed, 0.1f, Time.deltaTime);
-            Anim.SetFloat("Speed", Agent.velocity.magnitude, 0.1f, Time.deltaTime);
+
+            Anim.SetFloat("MoveX", localVelocity.x / Agent.speed, forwardDampTime, Time.deltaTime);
+            Anim.SetFloat("MoveZ", localVelocity.z / Agent.speed, forwardDampTime, Time.deltaTime);
+            Anim.SetFloat("Speed", Agent.velocity.magnitude, forwardDampTime, Time.deltaTime);
+
+            // 专属混合树 "Movement" 赋值 1 (往前跑，带重力感)
+            Anim.SetFloat("Movement", 1f, forwardDampTime, Time.deltaTime);
         }
         else if (currentState != BrainState.ExecutingAction)
         {
-            Anim.SetFloat("MoveX", 0f, 0.1f, Time.deltaTime);
-            Anim.SetFloat("MoveZ", 0f, 0.1f, Time.deltaTime);
-            Anim.SetFloat("Speed", 0f, 0.1f, Time.deltaTime);
+            Anim.SetFloat("MoveX", 0f, stopDampTime, Time.deltaTime);
+            Anim.SetFloat("MoveZ", 0f, stopDampTime, Time.deltaTime);
+            Anim.SetFloat("Speed", 0f, stopDampTime, Time.deltaTime);
+
+            // 专属混合树 "Movement" 赋值 0 (停下待机，快速刹车)
+            Anim.SetFloat("Movement", 0f, stopDampTime, Time.deltaTime);
         }
     }
 
@@ -240,24 +250,18 @@ public class EnemyBrain : MonoBehaviour
             Vector3 animDeltaPosition = Anim.deltaPosition;
             animDeltaPosition.y = 0;
 
-            // 🔥 ==============================================
-            // 🛡️ 软墙拦截机制：如果离玩家太近，且正在往玩家脸上撞，没收位移！
-            // =================================================
             if (Player != null)
             {
                 float distanceToPlayer = Vector3.Distance(transform.position, Player.position);
 
                 if (distanceToPlayer <= pushBlockDistance)
                 {
-                    // 算出从怪物指向玩家的向量
                     Vector3 dirToPlayer = (Player.position - transform.position).normalized;
                     dirToPlayer.y = 0;
                     dirToPlayer.Normalize();
 
-                    // 算出这一帧动画想要往玩家方向走多少
                     float pushAmount = Vector3.Dot(animDeltaPosition, dirToPlayer);
 
-                    // 如果确实是在往前挤 (>0)，我们把这段位移从 Root Motion 里减去
                     if (pushAmount > 0)
                     {
                         animDeltaPosition -= dirToPlayer * pushAmount;
