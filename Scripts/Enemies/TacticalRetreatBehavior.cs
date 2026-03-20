@@ -10,6 +10,11 @@ public class TacticalRetreatBehavior : MonoBehaviour
         [Tooltip("撤退动作持续的时间（秒），时间一到自动结束撤退并继续攻击")]
         public float retreatDuration = 1.2f;
 
+        // 🔥 就是这里！专属的后退过渡速度！
+        [Header("🏃 撤退敏捷度控制")]
+        [Tooltip("后退动作的渐变速度，数值越小，后退启动越快！(建议0.05~0.15)")]
+        [Range(0.01f, 0.5f)] public float retreatDampTime = 0.15f;
+
         [Header("🏃 撤退混合树控制 (Blend Tree)")]
         [Tooltip("控制前后移动的Float参数名（比如 Movement）")]
         public string moveFloatParam = "Movement";
@@ -57,7 +62,7 @@ public class TacticalRetreatBehavior : MonoBehaviour
         myHealth = GetComponent<EnemyHealth>();
     }
 
-    // 🔥 核心逻辑：每一帧给混合树发送平滑的数值，让怪物持续向后迈步
+    // 每一帧给混合树发送平滑的数值，让怪物持续向后迈步
     private void Update()
     {
         if (!isRetreating) return;
@@ -74,10 +79,10 @@ public class TacticalRetreatBehavior : MonoBehaviour
             brain.FaceTargetInstantly(brain.Player.position);
         }
 
-        // 🎯 【平滑位移】每帧持续赋值，加入 0.3f 缓冲时间，消除动作突变！
+        // 🎯 【迅捷后退】使用配置好的 retreatDampTime 进行敏捷平滑
         if (brain.Anim != null && currentActiveConfig != null)
         {
-            brain.Anim.SetFloat(currentActiveConfig.moveFloatParam, currentActiveConfig.retreatFloatValue, 0.3f, Time.deltaTime);
+            brain.Anim.SetFloat(currentActiveConfig.moveFloatParam, currentActiveConfig.retreatFloatValue, currentActiveConfig.retreatDampTime, Time.deltaTime);
         }
 
         // 倒计时
@@ -107,7 +112,7 @@ public class TacticalRetreatBehavior : MonoBehaviour
         // 2. 掷骰子决定是否防御
         bool isDefending = Random.value <= currentActiveConfig.defendChance;
 
-        // 3. 呼叫上半身覆盖动作 (下半身已经在 Update 里靠 Float 驱动了，不需要播动画节点)
+        // 3. 呼叫上半身覆盖动作
         if (brain.Anim != null)
         {
             if (isDefending && !string.IsNullOrEmpty(currentActiveConfig.defendBoolName))
@@ -136,8 +141,6 @@ public class TacticalRetreatBehavior : MonoBehaviour
                 brain.Anim.SetBool(currentActiveDefendBool, false);
                 currentActiveDefendBool = "";
             }
-            // 注意：这里我们故意没有把 Float 瞬间设为 0，而是保留原样
-            // 让怪物的 Chase 追击逻辑去平滑地把数值从 -1 拉回到 1（跑步）！
         }
 
         // 强行解锁大脑，归还控制权
